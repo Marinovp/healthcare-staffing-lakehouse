@@ -1,0 +1,9 @@
+locals {
+  env = "dev"
+
+  # Most aws resource names allow hyphens: hsl-dev
+  name_prefix = "hsl-${local.env}"
+
+  # Glue databases and Athena names should use underscores: hsl_dev_...
+  catalog_prefix = "hsl_${local.env}"
+}
