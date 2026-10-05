@@ -13,3 +13,13 @@ variable "account_id" {
     error_message = "account_id must be a 12 digit AWS account ID"
   }
 }
+
+variable "alert_email" {
+  description = "The email address to send alerts to."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.alert_email))
+    error_message = "alert_email must be a valid email address."
+  }
+}
