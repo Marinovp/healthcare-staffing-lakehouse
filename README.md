@@ -53,9 +53,9 @@ All infrastructure is defined in Terraform and deployed to `us-west-2`, in two s
 - AWS CLI v2, signed in to the target account: `aws sts get-caller-identity` should show it
 - Permission in that account to create S3 buckets and the project's resources
 
-### 1. Set your AWS account ID
+### 1. Set your AWS account ID and alert email
 
-Each stack refuses to run against any other account (`allowed_account_ids`). Copy the example files and set `account_id` to the number printed by the last command. The real `terraform.tfvars` files are git-ignored.
+Each stack refuses to run against any other account (`allowed_account_ids`). Copy the example files and set `account_id` to the number printed by the last command, lso set alert_email to the address that should receive budget alerts. The real `terraform.tfvars` files are git-ignored.
 
 ```bash
 cp terraform/bootstrap/terraform.tfvars.example terraform/bootstrap/terraform.tfvars
@@ -89,7 +89,7 @@ The dev state is stored in the bucket at `envs/dev/terraform.tfstate` and locked
 
 - [x] Repository foundation: gitignore, pre-commit, secret scanning
 - [x] Terraform foundation: remote state, provider, tagging
-- [ ] Lake storage, Glue Data Catalog, Athena workgroups
+- [x] Lake storage, Glue Data Catalog, Athena workgroups
 - [ ] Dataset contract and bronze tables
 - [ ] Ingestion job (Google Drive → S3)
 - [ ] Data profiling on bronze
