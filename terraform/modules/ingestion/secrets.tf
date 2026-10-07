@@ -4,6 +4,6 @@
 
 resource "aws_secretsmanager_secret" "google_service_account" {
   name                    = "${var.name_prefix}/google-drive-service-account"
-  description             = "Google Drive service account secret for reading Healtcare_Metrics Drive folder"
+  description             = "Google Drive service account secret for reading Healthcare_Metrics Drive folder"
   recovery_window_in_days = 7
 }

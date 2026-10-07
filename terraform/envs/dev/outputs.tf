@@ -27,3 +27,8 @@ output "google_secret_name" {
   description = "The name of the Google Drive service account secret"
   value       = module.ingestion.google_secret_name
 }
+
+output "dynamodb_manifest_table_name" {
+  description = "The name of the DynamoDB table used for the ingestion manifest"
+  value       = module.ingestion.dynamodb_manifest_table_name
+}
