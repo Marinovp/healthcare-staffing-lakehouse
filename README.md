@@ -90,7 +90,7 @@ The dev state is stored in the bucket at `envs/dev/terraform.tfstate` and locked
 - [x] Repository foundation: gitignore, pre-commit, secret scanning
 - [x] Terraform foundation: remote state, provider, tagging
 - [x] Lake storage, Glue Data Catalog, Athena workgroups
-- [ ] Dataset contract and bronze tables
+- [x] Bronze tables (Glue Crawler)
 - [ ] Ingestion job (Google Drive → S3)
 - [ ] Data profiling on bronze
 - [ ] Silver layer
