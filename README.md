@@ -25,10 +25,10 @@ AWS (S3, Glue, Athena, Step Functions, DynamoDB, Secrets Manager, CloudWatch, SN
 | Path | Contents |
 |---|---|
 | `docs/` | Solution design, summary and architecture diagram |
-| `terraform/` | Infrastructure as code *(planned)* |
+| `terraform/` | Infrastructure as code  |
 | `glue/` | Ingestion job *(planned)* |
 | `sql/` | Silver and gold transformations and data checks *(planned)* |
-| `datasets/` | Dataset contract (`datasets.json`) *(planned)* |
+| `scripts/` | Local data checks: file inventory and encoding check |
 | `dashboard/` | Streamlit app *(planned)* |
 | `data/` | Local source files (not committed; see `data/README.md`) |
 
