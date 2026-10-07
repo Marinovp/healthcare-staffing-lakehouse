@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Draft for SME review |
-| **Version** | 0.14 (2026-10-06): source files profiled; the Google Drive layout, conversion to UTF-8 at ingestion, and a Glue crawler for the bronze tables recorded. (0.13: silver stored as Iceberg tables; medallion mapping added.) |
+| **Version** | 0.15 (2026-10-07): the `drive_sync` job runs on **Glue Python shell, Python 3.9**, the version AWS provides for Python shell jobs; the Google libraries are installed by Glue at start (no wheel file). (0.14: profiling results; Google Drive layout; UTF-8 conversion; Glue crawler.) |
 | **Decision requested** | Approve the architecture in §5 so the build (Step 4) can start |
 | **Diagram** | [architecture.drawio.svg](architecture.drawio.svg): one file that is both the editable draw.io source and the image shown below |
 | **Summary** | [solution-design-summary.md](solution-design-summary.md) |
@@ -107,7 +107,7 @@ Everything above bronze can be deleted and recreated just by rerunning the pipel
 |---|---|---|---|
 | **Manual start** (Step Functions console or AWS CLI) | Starts a run when one is needed | This is a one-time project, so a schedule adds nothing. Clicking **Start execution**, or running `aws stepfunctions start-execution`, is all it takes. A rerun copies only new or changed files. | EventBridge Scheduler (a daily run), used until v0.11. |
 | **Step Functions** (Standard) | Orders the steps, handles retries and branching, and records each run's history | The whole pipeline can be seen and rerun from the console. Starts the Glue job and each Athena query and waits for them natively (`.sync`), starts the crawler and polls it until it finishes, and reads and updates DynamoDB directly. | MWAA (Airflow) needs an always-on environment of about $350/month, far too much for 5 steps. |
-| **Glue Python shell job `drive_sync`** | Lists Drive, diffs against the manifest, and for each changed file detects its encoding, streams it to S3 as UTF-8 and verifies its MD5 | Plain Python run by Glue on demand, with **no 15-minute limit**, so one job handles every file with no per-file splitting. Glue is already in the design for its Data Catalog. Costs cents: 1/16 DPU with a 1-minute minimum. | Lambda: instant start, but its 15-minute limit forced a split into two functions plus a Step Functions Map state (used until v0.9). Glue Spark jobs: a Spark cluster isn't needed to copy files. |
+| **Glue Python shell job `drive_sync`** | Lists Drive, diffs against the manifest, and for each changed file detects its encoding, streams it to S3 as UTF-8 and verifies its MD5 | Plain Python run by Glue on demand, with **no 15-minute limit**, so one job handles every file with no per-file splitting. **Runs Python 3.9**, the only version AWS offers for Glue Python shell jobs (per AWS's documentation). Glue is already in the design for its Data Catalog and crawler. Costs cents: 1/16 DPU with a 1-minute minimum. | Lambda: Python 3.14 and instant start, but a 15-minute limit that forced a split into two functions plus a Map state (used until v0.9). Glue 6.0 Spark job: Python 3.13, but a Spark cluster isn't needed to copy files. Both were compared on 2026-10-07; Python shell was kept for simplicity. |
 | **Secrets Manager** | Stores the Google service-account key | Encrypted and access-controlled through IAM. Keeps credentials out of code, environment variables and Terraform state. | SSM Parameter Store (SecureString) also works. Secrets Manager was chosen for rotation support. |
 | **DynamoDB manifest** | One item per Drive file: MD5, modified time, S3 key, status | Makes ingestion incremental and restartable. On-demand billing costs next to nothing at this volume. Step Functions reads and updates it natively. | A JSON manifest file in S3 has no per-item updates and needs custom code to change it. Listing S3 can't detect changed content. |
 | **S3** | The data lake: `raw/` (bronze: original files), `builds/` (silver and gold tables), `athena-results/` (query output) | Cheap, durable storage separated from compute. The immutable raw copy is what makes every downstream table rebuildable. | |
@@ -137,7 +137,7 @@ The job reads **one** Drive folder, `HealthCare_Metrics/`, recursively: PBJ sits
 
 Steps 4–7 run for up to 4 files at a time, in threads. If one file fails, the job carries on with the others, then **exits with an error** at the end. The run fails and alerts, but every good file is still landed.
 
-**Job settings:** 1/16 DPU (1 GB of memory) to start, raised to 1 DPU if copying turns out slow. A 60-minute timeout. **At most one concurrent run**, so Glue itself refuses to start a second copy job while one is active.
+**Job settings:** **Python 3.9**, as provided by AWS for Python shell jobs. The Google client libraries are installed by Glue when the job starts, through the `--additional-python-modules` job parameter, with the same **pinned versions** the tests use. 1/16 DPU (1 GB of memory) to start, raised to 1 DPU if copying turns out slow. A 60-minute timeout. **At most one concurrent run**, so Glue itself refuses to start a second copy job while one is active.
 
 **After the job:** Step Functions scans the manifest for `LANDED` items. The table holds one item per file, so the scan is tiny and needs no index. If there are none, the run ends. Otherwise, after a successful publish, the same list is used to set `status = PROCESSED` (a Map state calling DynamoDB `UpdateItem`).
 
@@ -152,7 +152,7 @@ Steps 4–7 run for up to 4 files at a time, in threads. If one file fails, the 
 | `raw/` | Source files (CSV, UTF-8), in `raw/<dataset>/ingest_date=YYYY-MM-DD/`. Content as received; only the encoding is normalised. | Permanent |
 | `builds/` | Silver (`builds/silver/`) and gold (`builds/gold/`) tables: Iceberg, with Parquet data files, one set per run | Kept for the three most recent builds (§10) |
 | `athena-results/` | Athena query output | Deleted after 7 days (lifecycle rule) |
-| `glue-scripts/` | The Glue job's script and the Google client library (a wheel file), uploaded by Terraform | Replaced on each deploy |
+| `glue-scripts/` | The Glue job's script, uploaded by Terraform | Replaced on each deploy |
 
 A bucket lifecycle rule also aborts unfinished multipart uploads after 7 days, so failed streams don't leave hidden storage charges behind.
 
@@ -300,7 +300,7 @@ A Step Functions run timeout of 2 hours prevents hung runs. Start a run only aft
 ## 13. Deployment and dashboard access
 
 - All AWS resources are defined in one Terraform configuration and deployed to a single account in `us-west-2` (Oregon): S3 bucket and lifecycle rules, DynamoDB table, the `drive_sync` Glue job, Glue databases, the crawler and its classifier, Athena workgroups, state machine, failure alert (EventBridge rule and SNS topic) and budget.
-- Terraform state is stored remotely (S3, encrypted, with state locking), in line with the existing Terraform setup. The job is an `aws_glue_job` of type `pythonshell`. Its script and the Google client wheel are uploaded to `glue-scripts/` with `aws_s3_object` on each `apply`.
+- Terraform state is stored remotely (S3, encrypted, with state locking), in line with the existing Terraform setup. The job is an `aws_glue_job` of type `pythonshell`. It runs **Python 3.9**, as provided by AWS. Its script is uploaded to `glue-scripts/` with `aws_s3_object` on each `apply`, and the Google client libraries are installed by Glue at start (`--additional-python-modules`, pinned to the versions in `glue/drive_sync/requirements.txt`).
 - **Bronze tables are not defined in Terraform.** The crawler, which is, creates them from the files.
 - **Build SQL** lives in the repository's `sql/` folder, one file per view, silver table, gold table and check. Terraform embeds the files into the state machine definition with `templatefile`, so each deploy ships exactly the SQL that runs, and there's no separate SQL deployment step.
 - **Secrets stay out of Terraform state:** the Google key secret is *created* by Terraform, but its value is set once outside it (console or CLI).
@@ -319,7 +319,7 @@ A Step Functions run timeout of 2 hours prevents hung runs. Start a run only aft
 | K1 | Supporting files may lack beds, overtime, length of stay, or readmissions | **Partly resolved by profiling:** ProviderInfo has certified beds (occupancy) and the Claims file has rehospitalisation rates. Overtime, pay, shifts and length of stay remain unavailable, so those metrics aren't produced. |
 | K2 | Athena cost grows (for example, a query over the raw CSVs from the dashboard) | The dashboard role can read only the `marts` views. Per-query scan limits on both workgroups. Budget alert. |
 | K3 | Dashboard queries take 1–3 seconds | Acceptable for an internal dashboard. The 24-hour cache and small pre-aggregated tables hide it for repeat views. |
-| K4 | Glue Python shell supports fewer Python versions than Lambda, and the Google client library must run on it | Check the supported Python version when building, and pin a compatible version of the Google client library. The job's 60-minute timeout and the failure alert cover a copy that runs unexpectedly long. |
+| K4 | Glue Python shell runs **only Python 3.9** (per AWS's documentation), and Python 3.9 stopped receiving upstream security fixes in October 2025 | Accepted for a one-time project. The job's code and tests use a **dedicated Python 3.9 environment** (`glue/drive_sync/.venv`), so local tests match AWS. Library versions are pinned to releases that support 3.9. The job's 60-minute timeout and the failure alert cover a copy that runs unexpectedly long. If the project continued, the job would move to Lambda (Python 3.14) or a newer Glue runtime. |
 | K5 | Source layout changes (columns added, removed or reordered) | The crawler updates the bronze table. The silver `base_` view names the columns it needs, so a missing column **fails the build** and alerts, and nothing is published. |
 | K6 | Drive folder structure or file names change | The job reads one folder by its Drive ID, and the manifest is keyed on each file's Drive ID, not its name. New files are landed and crawled. |
 | K7 | Google service-account key leak | Read-only scope on one folder, stored only in Secrets Manager, and rotated after the project. |

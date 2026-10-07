@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Draft for SME review |
-| **Version** | 0.14 summary (2026-10-06) |
+| **Version** | 0.15 summary (2026-10-07) |
 | **Full design** | [solution-design.md](solution-design.md): component reasoning, data-quality rules, failure handling, security details |
 | **Decision requested** | Approve the architecture below so the build (Step 4) can start |
 
@@ -42,7 +42,7 @@ Silver and gold are Iceberg tables in S3 (Parquet), and each is published only a
 | Service | Why |
 |---|---|
 | Step Functions | Orchestration with retries, run history and failure alerts. Runs the Glue job and Athena queries and waits for them natively. Started by hand, with no schedule. |
-| Glue Python shell job | Copies the files from Drive with plain Python: no servers and no time limit, for a few cents a month. |
+| Glue Python shell job | Copies the files from Drive with plain Python (**Python 3.9**, the version AWS provides for Glue Python shell): no servers and no time limit, for a few cents a month. |
 | DynamoDB | File manifest that makes ingestion incremental and restartable. |
 | S3 | The data lake: original files (bronze), silver and gold tables, and query output. |
 | Glue Data Catalog + crawler | Table definitions for Athena. A crawler creates the bronze tables from the files, so no schemas are written by hand. (No Glue Spark jobs are used.) |
@@ -91,7 +91,7 @@ The supporting files also enable **occupancy** (census ÷ certified beds) and **
 |---|---|---|
 | K1 | Supporting files may lack beds, overtime or length-of-stay data | Partly resolved: beds and rehospitalisation are available. Overtime and length of stay aren't, so they aren't produced. |
 | K3 | Dashboard queries take 1–3 seconds | A 24-hour cache and small pre-aggregated tables hide it. |
-| K4 | Glue Python shell must support the Google client library | Check the Python version when building, and pin a compatible library version. |
+| K4 | Glue Python shell runs only Python 3.9, which no longer gets upstream security fixes | Accepted for a one-time project. The job is developed and tested in a dedicated Python 3.9 environment, with library versions pinned. |
 | K5 | The source layout changes | The crawler updates the table. If a column the build needs is missing, the build fails and nothing is published. |
 | K12 | The crawler infers types, so an identifier code could lose its leading zeros | Silver restores fixed-width codes (CCN 6, FIPS 3, ZIP 5) with `lpad`. Code-column types are checked after the first full crawl. |
 
