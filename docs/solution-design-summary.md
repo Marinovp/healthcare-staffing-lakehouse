@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Draft for SME review |
-| **Version** | 0.13 summary (2026-09-29) |
+| **Version** | 0.14 summary (2026-10-06) |
 | **Full design** | [solution-design.md](solution-design.md): component reasoning, data-quality rules, failure handling, security details |
 | **Decision requested** | Approve the architecture below so the build (Step 4) can start |
 
@@ -11,7 +11,7 @@
 
 Management needs one view of nursing-facility staffing: nurse hours, contract-staff use and resident census by facility, state and time, and where staffing is out of line with patient load. This pipeline moves the source files from Google Drive into an S3 data lake, transforms them with Athena SQL, and feeds a Streamlit dashboard. **Every component is an AWS service, and all of it is serverless.**
 
-**Source:** CMS PBJ daily nurse staffing, Q2 2024 (about 1.3M rows, one per facility per day), plus 15 supporting CSVs. The data is public and facility-level, with no PHI. It has no beds, overtime, pay, readmission or length-of-stay fields, so metrics needing those are produced only if a supporting file provides them.
+**Source:** CMS PBJ daily nurse staffing, Q2 2024 (1,325,324 rows, one per facility per day, 14,564 facilities), plus 20 supporting CSVs from the CMS nursing home catalog (October 2024), all in one Google Drive folder, `HealthCare_Metrics/`. The data is public and facility-level, with no PHI. Profiling confirmed that the supporting files add **certified beds** and **ownership type** (`NH_ProviderInfo`) and **rehospitalisation** rates (`NH_QualityMsr_Claims`). Overtime, pay, shifts and length of stay aren't available, so those metrics aren't produced. PBJ is **Windows-1252** encoded, not UTF-8.
 
 ## Architecture
 
@@ -19,9 +19,9 @@ Management needs one view of nursing-facility staffing: nurse hours, contract-st
 
 A run has five steps, orchestrated by **Step Functions** and **started by hand** (Step Functions console or AWS CLI), since this is a one-time project:
 
-1. **Copy:** a Glue Python shell job compares the Drive folders with a DynamoDB manifest. It then checks each new or changed file's header, streams it to S3 `raw/`, and verifies its MD5.
+1. **Copy:** a Glue Python shell job compares the Drive folder with a DynamoDB manifest. It then streams each new or changed file to S3 `raw/`, converting it to UTF-8, and verifies its MD5.
 2. **Anything new?** Step Functions checks the manifest. If no file was landed, the run ends here.
-3. **Build + audit:** Athena reads the raw CSVs **in place** (no load step), writes this run's validated (silver) and modelled (gold) tables to S3, and runs the data checks.
+3. **Crawl, build + audit:** a Glue crawler registers the new files as bronze tables. Athena then reads the CSVs **in place** (no load step), writes this run's validated (silver) and modelled (gold) tables to S3, and runs the data checks.
 4. **Publish:** only if the checks pass, the silver, quarantine and dashboard views are switched to the new tables, and old builds are cleaned up.
 5. **Mark done:** the files are marked `PROCESSED` in the manifest.
 
@@ -31,7 +31,7 @@ The dashboard queries the published views through **Athena**.
 
 | Layer | In this design |
 |---|---|
-| **Bronze** (raw) | The original CSV files in S3 `raw/`: never changed, versioned, the basis for rebuilding everything |
+| **Bronze** (raw) | The source CSV files in S3 `raw/` (content as received, encoding normalised to UTF-8): never changed afterwards, versioned, the basis for rebuilding everything. Tables are created by a Glue crawler. |
 | **Silver** (clean) | One validated, typed table per dataset, built from the newest bronze file each run. Valid rows are published as `silver` views, and rejected rows as `quarantine` views with a reason. |
 | **Gold** (business) | The star schema and metrics, built from the valid silver rows and published as the `marts` views the dashboard reads |
 
@@ -45,11 +45,11 @@ Silver and gold are Iceberg tables in S3 (Parquet), and each is published only a
 | Glue Python shell job | Copies the files from Drive with plain Python: no servers and no time limit, for a few cents a month. |
 | DynamoDB | File manifest that makes ingestion incremental and restartable. |
 | S3 | The data lake: original files (bronze), silver and gold tables, and query output. |
-| Glue Data Catalog | Table definitions for Athena. (No Glue Spark jobs are used.) |
+| Glue Data Catalog + crawler | Table definitions for Athena. A crawler creates the bronze tables from the files, so no schemas are written by hand. (No Glue Spark jobs are used.) |
 | Athena | All SQL: validation, building the marts, checks, and dashboard queries. Billed per data scanned, with nothing running between queries. |
 | Secrets Manager | Holds the Google key. |
 | CloudWatch + SNS | Logs, alarms and failure emails. |
-| Terraform | Deploys all AWS resources, the raw table definitions and the build SQL, using the team's existing Terraform setup. |
+| Terraform | Deploys all AWS resources, including the crawler and the build SQL, using the team's existing Terraform setup. |
 
 ## Key design choices
 
@@ -57,7 +57,7 @@ Silver and gold are Iceberg tables in S3 (Parquet), and each is published only a
 - **Write-audit-publish.** Each run builds new tables and checks them. The dashboard is switched to them only if the checks pass, so a bad build never reaches it, and the last three builds are kept for easy rollback.
 - **Incremental and safe to rerun.** The manifest tracks each file as `LANDED` then `PROCESSED`, so a failure part-way through is picked up on the next run.
 - **Newest file wins.** Only the newest file per dataset (per quarter for PBJ) is used, so a corrected file replaces the old one exactly. Older files stay in `raw/` as history.
-- **Nothing dropped silently.** One validation view per dataset gives every invalid row a reason. Valid rows go on to silver and gold, and rejected rows appear in quarantine views that anyone can query. A file whose columns don't match the expected layout is stopped before upload.
+- **Nothing dropped silently.** One validation view per dataset gives every invalid row a reason. Valid rows go on to silver and gold, and rejected rows appear in quarantine views that anyone can query. If a source file loses a column the build needs, the build fails and nothing is published.
 
 ## Data model and metrics
 
@@ -71,7 +71,7 @@ Star schema: `fact_daily_staffing` (facility × day), `dim_facility`, `dim_date`
 | Below-benchmark day rate | % of days under 3.48 total HPRD or 0.55 RN HPRD (the 2024 CMS rule, used as a benchmark only because its enforcement has been delayed) |
 | Weekend staffing gap | Weekend HPRD − weekday HPRD |
 
-Occupancy and quality metrics are added only if the supporting files contain beds or quality data.
+The supporting files also enable **occupancy** (census ÷ certified beds) and **rehospitalisation** comparisons. Note that facility attributes are as of October 2024, while staffing is Q2 2024.
 
 ## Security and cost
 
@@ -89,12 +89,13 @@ Occupancy and quality metrics are added only if the supporting files contain bed
 
 | # | Risk | Handling |
 |---|---|---|
-| K1 | Supporting files may lack beds, overtime or length-of-stay data | Core metrics don't depend on them. Extra metrics only if the data exists. |
+| K1 | Supporting files may lack beds, overtime or length-of-stay data | Partly resolved: beds and rehospitalisation are available. Overtime and length of stay aren't, so they aren't produced. |
 | K3 | Dashboard queries take 1–3 seconds | A 24-hour cache and small pre-aggregated tables hide it. |
 | K4 | Glue Python shell must support the Google client library | Check the Python version when building, and pin a compatible library version. |
-| K5 | The source layout changes | The header check stops the file before upload and alerts. Update the dataset definition and rerun. |
+| K5 | The source layout changes | The crawler updates the table. If a column the build needs is missing, the build fails and nothing is published. |
+| K12 | The crawler infers types, so an identifier code could lose its leading zeros | Silver restores fixed-width codes (CCN 6, FIPS 3, ZIP 5) with `lpad`. Code-column types are checked after the first full crawl. |
 
-The full risk list (K1–K11) is in the [full design](solution-design.md).
+The full risk list (K1–K13) is in the [full design](solution-design.md).
 
 ## Approval
 
