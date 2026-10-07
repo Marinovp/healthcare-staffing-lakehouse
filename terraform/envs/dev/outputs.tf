@@ -22,3 +22,8 @@ output "athena_workgroup_names" {
   description = "Athena workgroup per consumer."
   value       = module.lakehouse.athena_workgroup_names
 }
+
+output "google_secret_name" {
+  description = "The name of the Google Drive service account secret"
+  value       = module.ingestion.google_secret_name
+}

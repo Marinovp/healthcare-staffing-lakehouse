@@ -16,3 +16,9 @@ module "lakehouse" {
   catalog_prefix = local.catalog_prefix
   alert_email    = var.alert_email
 }
+
+module "ingestion" {
+  source = "../../modules/ingestion"
+
+  name_prefix = local.name_prefix
+}
