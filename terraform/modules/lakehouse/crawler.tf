@@ -47,17 +47,17 @@ resource "aws_iam_role_policy" "crawler_read_raw" {
   policy = data.aws_iam_policy_document.crawler_read_raw.json
 }
 
-# ---------- Classifier: every column as text, header row present ----------
+# ---------- Classifier: CSV with a header row; types are inferred (codes are re-padded in silver) ----------
 
-resource "aws_glue_classifier" "csv_all_strings" {
-  name = "${var.name_prefix}-csv-all-strings"
+
+resource "aws_glue_classifier" "csv_header" {
+  name = "${var.name_prefix}-csv-header"
 
   csv_classifier {
-    contains_header            = "PRESENT"
-    delimiter                  = ","
-    quote_symbol               = "\""
-    custom_datatype_configured = true
-    custom_datatypes           = ["STRING"]
+    contains_header = "PRESENT"
+    delimiter       = ","
+    quote_symbol    = "\""
+
   }
 }
 
@@ -67,7 +67,7 @@ resource "aws_glue_crawler" "raw" {
   name          = "${var.name_prefix}-raw"
   role          = aws_iam_role.crawler.arn
   database_name = aws_glue_catalog_database.this["raw"].name
-  classifiers   = [aws_glue_classifier.csv_all_strings.name]
+  classifiers   = [aws_glue_classifier.csv_header.name]
 
   s3_target {
     path = "s3://${aws_s3_bucket.lake.bucket}/raw/"
