@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Draft for SME review |
-| **Version** | 0.15 summary (2026-10-07) |
+| **Version** | 0.16 summary (2026-10-07) |
 | **Full design** | [solution-design.md](solution-design.md): component reasoning, data-quality rules, failure handling, security details |
 | **Decision requested** | Approve the architecture below so the build (Step 4) can start |
 
@@ -19,7 +19,7 @@ Management needs one view of nursing-facility staffing: nurse hours, contract-st
 
 A run has five steps, orchestrated by **Step Functions** and **started by hand** (Step Functions console or AWS CLI), since this is a one-time project:
 
-1. **Copy:** a Glue Python shell job compares the Drive folder with a DynamoDB manifest. It then streams each new or changed file to S3 `raw/`, converting it to UTF-8, and verifies its MD5.
+1. **Copy:** a Glue Python shell job compares the Drive folder with a DynamoDB manifest. It then copies each new or changed CSV to S3 `raw/`, verifying its MD5 and converting it to UTF-8.
 2. **Anything new?** Step Functions checks the manifest. If no file was landed, the run ends here.
 3. **Crawl, build + audit:** a Glue crawler registers the new files as bronze tables. Athena then reads the CSVs **in place** (no load step), writes this run's validated (silver) and modelled (gold) tables to S3, and runs the data checks.
 4. **Publish:** only if the checks pass, the silver, quarantine and dashboard views are switched to the new tables, and old builds are cleaned up.
@@ -91,7 +91,7 @@ The supporting files also enable **occupancy** (census ÷ certified beds) and **
 |---|---|---|
 | K1 | Supporting files may lack beds, overtime or length-of-stay data | Partly resolved: beds and rehospitalisation are available. Overtime and length of stay aren't, so they aren't produced. |
 | K3 | Dashboard queries take 1–3 seconds | A 24-hour cache and small pre-aggregated tables hide it. |
-| K4 | Glue Python shell runs only Python 3.9, which no longer gets upstream security fixes | Accepted for a one-time project. The job is developed and tested in a dedicated Python 3.9 environment, with library versions pinned. |
+| K4 | Glue Python shell runs only Python 3.9, which no longer gets upstream security fixes | Accepted for a one-time project. The job is developed and run in a dedicated Python 3.9 environment, with library versions pinned. |
 | K5 | The source layout changes | The crawler updates the table. If a column the build needs is missing, the build fails and nothing is published. |
 | K12 | The crawler infers types, so an identifier code could lose its leading zeros | Silver restores fixed-width codes (CCN 6, FIPS 3, ZIP 5) with `lpad`. Code-column types are checked after the first full crawl. |
 

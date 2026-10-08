@@ -26,7 +26,7 @@ AWS (S3, Glue, Athena, Step Functions, DynamoDB, Secrets Manager, CloudWatch, SN
 |---|---|
 | `docs/` | Solution design, summary and architecture diagram |
 | `terraform/` | Infrastructure as code  |
-| `glue/` | Ingestion job *(planned)* |
+| `glue/drive_sync/` | Ingestion job: copies new or changed CSVs from Google Drive to S3 (Python 3.9, Glue Python shell) |
 | `sql/` | Silver and gold transformations and data checks *(planned)* |
 | `scripts/` | Local data checks: file inventory and encoding check |
 | `dashboard/` | Streamlit app *(planned)* |
@@ -43,6 +43,17 @@ pre-commit install
 
 Every commit is checked automatically, including secret scanning with gitleaks.
 
+The ingestion job has its own environment, because AWS Glue Python shell runs **Python 3.9**. It's created with [uv](https://docs.astral.sh/uv/):
+
+```bash
+cd glue/drive_sync
+uv venv --python 3.9
+source .venv/bin/activate
+uv pip install -r requirements-dev.txt
+```
+
+`requirements.txt` pins the Google client libraries. Terraform reads the same file when it deploys the job, so local runs and AWS use the same versions.
+
 ## Deployment
 
 All infrastructure is defined in Terraform and deployed to `us-west-2`, in two stacks applied in order: `bootstrap` (the state bucket) and `envs/dev` (the project).
@@ -55,7 +66,7 @@ All infrastructure is defined in Terraform and deployed to `us-west-2`, in two s
 
 ### 1. Set your AWS account ID and alert email
 
-Each stack refuses to run against any other account (`allowed_account_ids`). Copy the example files and set `account_id` to the number printed by the last command, lso set alert_email to the address that should receive budget alerts. The real `terraform.tfvars` files are git-ignored.
+Each stack refuses to run against any other account (`allowed_account_ids`). Copy the example files and set `account_id` to the number printed by the last command, and set `alert_email` to the address that should receive budget alerts. The real `terraform.tfvars` files are git-ignored.
 
 ```bash
 cp terraform/bootstrap/terraform.tfvars.example terraform/bootstrap/terraform.tfvars
@@ -85,13 +96,41 @@ terraform -chdir=terraform/envs/dev apply
 
 The dev state is stored in the bucket at `envs/dev/terraform.tfstate` and locked during every run, so two applies can't overlap.
 
+### 4. Give the pipeline read access to Google Drive
+
+1. In Google Cloud, create a project, enable the **Google Drive API**, and create a service account with a JSON key.
+2. Share the Drive folder that holds the source files with the service account's email, as **Viewer**.
+3. Store the key in the secret Terraform created, then delete the local copy. The key never goes into Git or Terraform state.
+
+```bash
+aws secretsmanager put-secret-value --region us-west-2 \
+  --secret-id "$(terraform -chdir=terraform/envs/dev output -raw google_secret_name)" \
+  --secret-string file://path/to/key.json
+rm path/to/key.json
+```
+
+### 5. Run the ingestion job locally
+
+The job copies every new or changed CSV in the Drive folder to `raw/` in the lake bucket and records it in the DynamoDB manifest. Run it from the job's environment (see [Development setup](#development-setup)). The folder ID is the last part of the folder's Drive URL.
+
+```bash
+cd glue/drive_sync
+python drive_sync.py \
+  --folder_id <drive-folder-id> \
+  --bucket "$(terraform -chdir=../../terraform/envs/dev output -raw lake_bucket_name)" \
+  --manifest_table "$(terraform -chdir=../../terraform/envs/dev output -raw dynamodb_manifest_table_name)" \
+  --secret_name "$(terraform -chdir=../../terraform/envs/dev output -raw google_secret_name)"
+```
+
+Running it a second time copies nothing: only new or changed files are copied.
+
 ## Roadmap
 
 - [x] Repository foundation: gitignore, pre-commit, secret scanning
 - [x] Terraform foundation: remote state, provider, tagging
 - [x] Lake storage, Glue Data Catalog, Athena workgroups
 - [x] Bronze tables (Glue Crawler)
-- [ ] Ingestion job (Google Drive → S3)
+- [ ] Ingestion job (Google Drive → S3): runs locally; deployment as a Glue job in progress
 - [ ] Data profiling on bronze
 - [ ] Silver layer
 - [ ] Gold layer and data checks
