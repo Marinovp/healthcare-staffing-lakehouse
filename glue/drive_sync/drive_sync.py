@@ -1,14 +1,26 @@
 """drive_sync: copy new or changed CSV files from a Google Drive folder into S3 (bronze)."""
 
+import argparse
 import hashlib
+import json
+import logging
 import re
+import sys
 import tempfile
+from datetime import datetime, timezone
 
+import boto3
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
 FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
 FIELDS = "nextPageToken, files(id, name, mimeType, md5Checksum)"
 CHUNK_SIZE = 8 * 1024 * 1024  # Download in 8 MB chunks
+
+DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
+
+log = logging.getLogger("drive_sync")
 
 
 def list_csv_files(drive, folder_id: str) -> list[dict]:
@@ -87,3 +99,58 @@ def copy_file(drive, s3, table, file: dict, bucket: str, ingest_date: str) -> No
             "status": "LANDED",
         }
     )
+
+
+def parse_args() -> argparse.Namespace:
+    """Read the job settings. Glue passes them as --name value, like a command line."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--folder_id", required=True)
+    parser.add_argument("--bucket", required=True)
+    parser.add_argument("--manifest_table", required=True)
+    parser.add_argument("--secret_name", required=True)
+    parser.add_argument("--region", default="us-west-2")
+    args, _ = parser.parse_known_args()
+    return args
+
+
+def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        stream=sys.stdout,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+    args = parse_args()
+
+    secrets = boto3.client("secretsmanager", region_name=args.region)
+    key_json = secrets.get_secret_value(SecretId=args.secret_name)["SecretString"]
+    credentials = service_account.Credentials.from_service_account_info(
+        json.loads(key_json), scopes=[DRIVE_SCOPE]
+    )
+    drive = build("drive", "v3", credentials=credentials, cache_discovery=False)
+    s3 = boto3.client("s3", region_name=args.region)
+    table = boto3.resource("dynamodb", region_name=args.region).Table(
+        args.manifest_table
+    )
+
+    manifest = {item["drive_file_id"]: item for item in table.scan()["Items"]}
+    files = list_csv_files(drive, args.folder_id)
+    to_copy = files_to_copy(files, manifest)
+    log.info("Found %d CSV files in Drive, %d new or changed", len(files), len(to_copy))
+
+    ingest_date = datetime.now(timezone.utc).date().isoformat()
+    failed = []
+    for file in to_copy:
+        try:
+            copy_file(drive, s3, table, file, args.bucket, ingest_date)
+            log.info("Copied %s", file["name"])
+        except Exception:
+            log.exception("Failed to copy %s", file["name"])
+            failed.append(file["name"])
+
+    if failed:
+        raise RuntimeError(f"{len(failed)} of {len(to_copy)} files failed: {failed}")
+    log.info("Done: copied %d files", len(to_copy))
+
+
+if __name__ == "__main__":
+    main()
