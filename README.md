@@ -124,13 +124,26 @@ python drive_sync.py \
 
 Running it a second time copies nothing: only new or changed files are copied.
 
+### 6. Run the ingestion job in AWS Glue
+
+`terraform apply` (step 3) deploys the same script as the Glue Python shell job `hsl-dev-drive-sync`, with its settings passed as job arguments. Set `drive_folder_id` in `terraform/envs/dev/terraform.tfvars` before applying.
+
+```bash
+aws glue start-job-run --job-name hsl-dev-drive-sync --region us-west-2
+aws glue get-job-runs --job-name hsl-dev-drive-sync --max-items 1 \
+  --query 'JobRuns[0].[JobRunState,ExecutionTime,ErrorMessage]' --region us-west-2
+aws logs tail /aws-glue/python-jobs/output --since 15m --region us-west-2
+```
+
+Errors and tracebacks are in the `/aws-glue/python-jobs/error` log group.
+
 ## Roadmap
 
 - [x] Repository foundation: gitignore, pre-commit, secret scanning
 - [x] Terraform foundation: remote state, provider, tagging
 - [x] Lake storage, Glue Data Catalog, Athena workgroups
 - [x] Bronze tables (Glue Crawler)
-- [ ] Ingestion job (Google Drive → S3): runs locally; deployment as a Glue job in progress
+- [x] Ingestion job (Google Drive → S3)
 - [ ] Data profiling on bronze
 - [ ] Silver layer
 - [ ] Gold layer and data checks
