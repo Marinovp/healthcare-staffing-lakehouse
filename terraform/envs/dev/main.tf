@@ -20,5 +20,7 @@ module "lakehouse" {
 module "ingestion" {
   source = "../../modules/ingestion"
 
-  name_prefix = local.name_prefix
+  name_prefix      = local.name_prefix
+  lake_bucket_name = module.lakehouse.lake_bucket_name
+  drive_folder_id  = var.drive_folder_id
 }

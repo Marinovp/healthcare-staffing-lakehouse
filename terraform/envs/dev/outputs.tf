@@ -32,3 +32,8 @@ output "dynamodb_manifest_table_name" {
   description = "The name of the DynamoDB table used for the ingestion manifest"
   value       = module.ingestion.dynamodb_manifest_table_name
 }
+
+output "drive_sync_job_name" {
+  description = "Name of the Glue job that copies Drive files to raw"
+  value       = module.ingestion.drive_sync_job_name
+}

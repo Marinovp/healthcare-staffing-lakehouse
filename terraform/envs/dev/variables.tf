@@ -23,3 +23,8 @@ variable "alert_email" {
     error_message = "alert_email must be a valid email address."
   }
 }
+
+variable "drive_folder_id" {
+  description = "ID of the Google Drive folder holding the source files (the last part of its URL)"
+  type        = string
+}
