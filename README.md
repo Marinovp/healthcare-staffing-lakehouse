@@ -75,7 +75,26 @@ python -m pip install -r requirements-dev.txt
 pre-commit install
 ```
 
-Every commit is checked automatically, including secret scanning with gitleaks.
+### Commit checks (pre-commit)
+
+`pre-commit install` sets up a Git hook, so these checks run on every `git commit` (configured in `.pre-commit-config.yaml`):
+
+| Check | What it does |
+|---|---|
+| **gitleaks** | Blocks the commit if it finds a secret (keys, tokens, passwords). This is a public repo, so nothing sensitive may be committed. |
+| `detect-private-key` | Blocks private keys, such as a Google service-account JSON |
+| `check-added-large-files` | Blocks files over 1 MB (the source CSVs stay in `data/`, which is git-ignored) |
+| `terraform_fmt` | Formats `.tf` files (needs Terraform installed) |
+| `check-yaml`, `check-json`, `check-merge-conflict` | Catch broken config files and leftover merge markers |
+| `end-of-file-fixer`, `trailing-whitespace` | Tidy whitespace |
+
+- **Run them by hand** on every file: `pre-commit run --all-files`
+- **If a check fixes a file** (formatting or whitespace), the commit stops. Run `git add` on the changed files and commit again.
+- **If gitleaks blocks a commit,** remove the secret. Don't bypass it with `--no-verify`. A pushed secret should be treated as leaked and rotated.
+- **Update the pinned versions:** `pre-commit autoupdate`, then commit the updated config.
+- **macOS `CERTIFICATE_VERIFY_FAILED`** on the first run (Python from python.org): run *Install Certificates.command* from the Python folder in Applications.
+
+### Ingestion job environment
 
 The ingestion job has its own environment, because AWS Glue Python shell runs **Python 3.9**. It's created with [uv](https://docs.astral.sh/uv/):
 
@@ -98,9 +117,9 @@ All infrastructure is defined in Terraform and deployed to `us-west-2`, in two s
 - AWS CLI v2, signed in to the target account: `aws sts get-caller-identity` should show it
 - Permission in that account to create S3 buckets and the project's resources
 
-### 1. Set your AWS account ID and alert email
+### 1. Fill in your settings
 
-Each stack refuses to run against any other account (`allowed_account_ids`). Copy the example files and set `account_id` to the number printed by the last command, and set `alert_email` to the address that should receive budget alerts. The real `terraform.tfvars` files are git-ignored.
+Each stack refuses to run against any other account (`allowed_account_ids`). Copy the example files and set `account_id` to the number printed by the last command, `alert_email` to the address that should receive budget and failure alerts, and (in `envs/dev`) `drive_folder_id` to the ID of the Google Drive folder with the source files (the last part of its URL). The real `terraform.tfvars` files are git-ignored.
 
 ```bash
 cp terraform/bootstrap/terraform.tfvars.example terraform/bootstrap/terraform.tfvars
@@ -145,7 +164,7 @@ rm path/to/key.json
 
 ### 5. Run the ingestion job locally
 
-The job copies every new or changed CSV in the Drive folder to `raw/` in the lake bucket, registers it as a table in the `raw` Glue database, and records it in the DynamoDB manifest. Run it from the job's environment (see [Development setup](#development-setup)). The folder ID is the last part of the folder's Drive URL.
+The job copies every new or changed CSV in the Drive folder to `raw/` in the lake bucket, registers it as a table in the `raw` Glue database, and records it in the DynamoDB manifest. Run it from the job's environment (see [Ingestion job environment](#ingestion-job-environment)). The folder ID is the last part of the folder's Drive URL.
 
 ```bash
 cd glue/drive_sync
@@ -161,7 +180,7 @@ Running it a second time copies nothing: only new or changed files are copied.
 
 ### 6. Run the ingestion job in AWS Glue
 
-`terraform apply` (step 3) deploys the same script as the Glue Python shell job `hsl-dev-drive-sync`, with its settings passed as job arguments. Set `drive_folder_id` in `terraform/envs/dev/terraform.tfvars` before applying.
+`terraform apply` (step 3) deploys the same script as the Glue Python shell job `hsl-dev-drive-sync`, with its settings (including `drive_folder_id` from step 1) passed as job arguments.
 
 ```bash
 aws glue start-job-run --job-name hsl-dev-drive-sync --region us-west-2
@@ -195,13 +214,22 @@ streamlit run dashboard/app.py
 
 It covers staffing (nurse hours per resident day, RN hours, contract-staff share), the share of days below the CMS benchmark, trends by day and month, comparisons by state and ownership, staffing against occupancy and rehospitalisation, and facility rankings.
 
+### Tearing down
+
+The data stores are protected on purpose, so `terraform destroy` stops on them until you remove the protection:
+
+- **Lake bucket and state bucket:** `prevent_destroy` in Terraform. Remove that `lifecycle` block first. Both buckets are versioned, so they must also be emptied, old versions included, before they can be deleted.
+- **Manifest table:** DynamoDB deletion protection. Set `deletion_protection_enabled = false` and apply before destroying.
+
+Destroy `envs/dev` first and `bootstrap` last, because the dev state is stored in the bootstrap bucket. The tables created by the job and the pipeline are deleted along with their Glue databases.
+
 ## Roadmap
 
 - [x] Repository foundation: gitignore, pre-commit, secret scanning
 - [x] Terraform foundation: remote state, provider, tagging
 - [x] Lake storage, Glue Data Catalog, Athena workgroups
 - [x] Ingestion job (Google Drive → S3), registering bronze tables with every column as text
-- [x] Data profiling on bronze ([findings](docs/data-profile.md))
+- [x] Data profiling on bronze ([profile](docs/data-profile.md))
 - [x] Silver layer: validation views, Iceberg silver tables, silver and quarantine views
 - [x] Gold layer and data checks: star schema, monthly metrics, checks gating publish
 - [x] Orchestration with Step Functions: write-audit-publish, failure alerts, full run in about 3 minutes
