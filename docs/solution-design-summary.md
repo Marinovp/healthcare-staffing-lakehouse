@@ -22,7 +22,7 @@ A run has five steps, orchestrated by **Step Functions** and **started by hand**
 1. **Copy:** a Glue Python shell job compares the Drive folder with a DynamoDB manifest. It then copies each new or changed CSV to S3 `raw/`, verifying its MD5 and converting it to UTF-8, and registers it as a bronze table with every column as text.
 2. **Anything new?** Step Functions checks the manifest. If no file was landed, the run ends here.
 3. **Build + audit:** Athena reads the CSVs **in place** (no load step), writes this run's validated (silver) and modelled (gold) tables to S3, and runs the data checks.
-4. **Publish:** only if the checks pass, the silver, quarantine and dashboard views are switched to the new tables, and old builds are cleaned up.
+4. **Publish:** only if the checks pass, the silver, quarantine and dashboard views are switched to the new tables.
 5. **Mark done:** the files are marked `PROCESSED` in the manifest.
 
 The dashboard queries the published views through **Athena**.
@@ -54,7 +54,7 @@ Silver and gold are Iceberg tables in S3 (Parquet), and each is published only a
 ## Key design choices
 
 - **Lakehouse, not a database.** Data stays in S3, and Athena reads and writes it with SQL. There's no load step, no VPC, and nothing running (or billing) between runs. Rejected alternatives: Glue Spark jobs (built for data 100–1000× this size), Redshift (a full warehouse, VPC and higher cost), and dbt (needs a SaaS outside AWS or a container).
-- **Write-audit-publish.** Each run builds new tables and checks them. The dashboard is switched to them only if the checks pass, so a bad build never reaches it, and the last three builds are kept for easy rollback.
+- **Write-audit-publish.** Each run builds new tables and checks them. The dashboard is switched to them only if the checks pass, so a bad build never reaches it. Earlier builds are kept, so rolling back is just re-pointing the views.
 - **Incremental and safe to rerun.** The manifest tracks each file as `LANDED` then `PROCESSED`, so a failure part-way through is picked up on the next run.
 - **Newest file wins.** Only the newest file per dataset (per quarter for PBJ) is used, so a corrected file replaces the old one exactly. Older files stay in `raw/` as history.
 - **Nothing dropped silently.** One validation view per dataset gives every invalid row a reason. Valid rows go on to silver and gold, and rejected rows appear in quarantine views that anyone can query. If a source file loses a column the build needs, the build fails and nothing is published.

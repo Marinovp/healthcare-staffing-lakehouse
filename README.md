@@ -138,6 +138,17 @@ aws logs tail /aws-glue/python-jobs/output --since 15m --region us-west-2
 
 Errors and tracebacks are in the `/aws-glue/python-jobs/error` log group.
 
+### 7. Run the whole pipeline
+
+A Step Functions state machine runs everything in order: copy from Drive, build silver and gold, run the data checks, and publish only if every error-level check passes. Confirm the SNS subscription email first, so failure alerts reach you.
+
+```bash
+aws stepfunctions start-execution --region us-west-2 \
+  --state-machine-arn "$(terraform -chdir=terraform/envs/dev output -raw pipeline_state_machine_arn)"
+```
+
+Follow the run in the Step Functions console. Check results are in `hsl_dev_audit.check_results`, and the dashboard reads the `hsl_dev_marts` views. A second run with no new files ends at `NothingToBuild`.
+
 ## Roadmap
 
 - [x] Repository foundation: gitignore, pre-commit, secret scanning

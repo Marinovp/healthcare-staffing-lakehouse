@@ -153,7 +153,7 @@ Files are copied **one at a time**: 21 files, about 600 MB in total, take a few 
 | Prefix | Contents | Retention |
 |---|---|---|
 | `raw/` | Source files (CSV, UTF-8), in `raw/<dataset>/ingest_date=YYYY-MM-DD/`. Content as received; only the encoding is normalised. | Permanent |
-| `builds/` | Silver (`builds/silver/`) and gold (`builds/gold/`) tables: Iceberg, with Parquet data files, one set per run | Kept for the three most recent builds (§10) |
+| `builds/` | Silver (`builds/silver/`) and gold (`builds/gold/`) tables: Iceberg, with Parquet data files, one set per run | Every build is kept: old builds are dropped by hand when needed (§10) |
 | `athena-results/` | Athena query output | Deleted after 7 days (lifecycle rule) |
 | `audit/` | `check_results`: one row per check per run (Iceberg) | Permanent |
 | `glue-scripts/` | The Glue job's script, uploaded by Terraform | Replaced on each deploy |
@@ -262,10 +262,10 @@ The `silver` and `quarantine` views are two filters on the same stored silver ta
 | 1. `drive_sync` (Glue job) | List Drive and compare with the manifest. For each new or changed CSV: download, MD5 check, convert to UTF-8, upload to `raw/`, mark `LANDED`. | Inside the job: exponential backoff on Drive API 429 and 5xx errors. Plus 1 retry of the whole job. | Run fails and alerts. Files that did land stay `LANDED` and are built on the next run. |
 | 2. Anything to build? | Scan the manifest for `LANDED` files. None → end the run. | 3 attempts | Run fails and alerts. |
 | 3. Build + audit | Athena queries in order: refresh the validation views, create this run's silver tables, then its gold tables, in `builds`, then write the check results | 1 retry for each query | Run fails and alerts. Nothing has been published. |
-| 4. Publish | If no error-level check failed: point the `silver`, `quarantine` and `marts` views at this run's tables, then drop builds older than the three most recent | 1 retry per query | Run fails and alerts. See "Publishing" below. |
+| 4. Publish | If no error-level check failed: point the `silver`, `quarantine` and `marts` views at this run's tables | Retries on Athena throttling | Run fails and alerts. See "Publishing" below. |
 | 5. Mark `PROCESSED` | Update the manifest | 3 attempts | Run fails. The files are simply rebuilt next time, which is harmless. |
 
-The Glue job and every Athena query are started with Step Functions' native integrations (`glue:startJobRun.sync` and `athena:startQueryExecution.sync`), which wait for them to finish. The build SQL is part of the state machine definition (§13), and the run ID comes from the run's start time, so every table name is unique.
+The Glue job and every Athena query are started with Step Functions' native integrations (`glue:startJobRun.sync` and `athena:startQueryExecution.sync`), which wait for them to finish. The state machine uses **JSONata**. Terraform renders every file in `sql/` at deploy time and embeds them in the definition as two ordered lists, one for build and audit (12 statements) and one for publish (10). Each list is a `Map` state that runs one statement at a time, in order. The run ID (for example `r20261009_183005`) is built from the execution's start time and replaces a `__RUN_ID__` marker in each statement, so every run's tables have unique names. A SQL change therefore takes effect on the next `terraform apply`.
 
 ### Write-audit-publish
 
@@ -274,9 +274,9 @@ Athena can't wrap several tables in one transaction, so the build never writes i
 2. **Audit:** the checks run against those new tables.
 3. **Publish:** only if the checks pass are the `silver`, `quarantine` and `marts` views switched to the new tables.
 
-A failed build is never published, and the dashboard keeps using the previous build. The three most recent builds are kept, so going back to an earlier good build is just re-pointing the views.
+A failed build is never published, and the dashboard keeps using the previous build. Earlier builds stay in `builds`, so going back to an earlier good build is just re-pointing the views. **Old builds are not dropped automatically:** this is a one-time project with a handful of runs, and each build is about 80 MB (well under a cent a month), so an automated cleanup step isn't worth its complexity. A long-running pipeline would add it.
 
-**Publishing:** the views are switched by a Step Functions Map state, several at a time, so a publish takes seconds. The `silver` and `quarantine` views go first and the `marts` views last. If a publish query fails part-way, the views may briefly point at different builds, and the alert tells someone to rerun the run (§14 K10).
+**Publishing:** the views are switched by a Step Functions Map state, one at a time, so a publish takes seconds. The `silver` and `quarantine` views go first and the `marts` views last. If a publish query fails part-way, the views may briefly point at different builds, and the alert tells someone to rerun the run (§14 K10).
 
 A Step Functions run timeout of 2 hours prevents hung runs. Start a run only after the previous one has finished. If a second run is started while one is active, Glue refuses its job (at most one concurrent run), so the second run stops at step 1.
 
