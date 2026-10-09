@@ -29,7 +29,7 @@ AWS (S3, Glue, Athena, Step Functions, DynamoDB, Secrets Manager, CloudWatch, SN
 | `glue/drive_sync/` | Ingestion job: copies new or changed CSVs from Google Drive to S3 (Python 3.9, Glue Python shell) |
 | `sql/` | Bronze profiling, silver validation views, gold star schema and metrics, data checks, publish views |
 | `scripts/` | Local data checks: file inventory and encoding check |
-| `dashboard/` | Streamlit app *(planned)* |
+| `dashboard/` | Streamlit dashboard on the published marts |
 | `data/` | Local source files (not committed; see `data/README.md`) |
 
 ## Development setup
@@ -149,6 +149,18 @@ aws stepfunctions start-execution --region us-west-2 \
 
 Follow the run in the Step Functions console. Check results are in `hsl_dev_audit.check_results`, and the dashboard reads the `hsl_dev_marts` views. A second run with no new files ends at `NothingToBuild`.
 
+### 8. Open the dashboard
+
+The Streamlit app reads the published `hsl_dev_marts` views through Athena's `dashboard` workgroup, using your AWS credentials, and caches the results for 24 hours.
+
+```bash
+source .venv/bin/activate
+python -m pip install -r dashboard/requirements.txt
+streamlit run dashboard/app.py
+```
+
+It covers staffing (nurse hours per resident day, RN hours, contract-staff share), the share of days below the CMS benchmark, trends by day and month, comparisons by state and ownership, staffing against occupancy and rehospitalisation, and facility rankings.
+
 ## Roadmap
 
 - [x] Repository foundation: gitignore, pre-commit, secret scanning
@@ -159,4 +171,4 @@ Follow the run in the Step Functions console. Check results are in `hsl_dev_audi
 - [x] Silver layer: validation views, Iceberg silver tables, silver and quarantine views
 - [x] Gold layer and data checks: star schema, monthly metrics, checks gating publish
 - [x] Orchestration with Step Functions: write-audit-publish, failure alerts, full run in about 3 minutes
-- [ ] Dashboard
+- [x] Dashboard: Streamlit on the published marts

@@ -289,7 +289,7 @@ A Step Functions run timeout of 2 hours prevents hung runs. Start a run only aft
 - **IAM:** one least-privilege role per component:
   - `drive_sync` Glue job: read one secret, read `glue-scripts/`, write `raw/`, read and write the manifest table, register bronze tables, write its logs. The catalog and log permissions come from AWS's managed `AWSGlueServiceRole`, which allows all Glue actions. That's broader than the job needs (it only writes to the `raw` database), and is accepted for this one-time project. A production setup would replace it with a policy limited to the `raw` database and the job's log group.
   - Step Functions: start the `drive_sync` job; run queries in the `pipeline` workgroup; read `raw/`, write `builds/` and its results prefix; create and drop tables in the `staging`, `builds`, `silver`, `quarantine`, `marts` and `audit` databases; scan and update the manifest table.
-  - Dashboard: run queries in the `dashboard` workgroup; read the `marts` views and the `builds/` data behind them; write its results prefix.
+  - Dashboard: run queries in the `dashboard` workgroup; read the `marts` views and the `builds/` data behind them; write its results prefix. *(Not created yet: the dashboard currently runs locally with the developer's credentials.)*
 - **Google access:** the service account has read-only access to the shared `HealthCare_Metrics` folder only.
 - **Monitoring:** the Glue job and Step Functions log to CloudWatch. An EventBridge rule on Step Functions `FAILED` or `TIMED_OUT` publishes to an SNS email topic.
 - **Cost guard:** an AWS Budgets alert at $10 per month, alongside the workgroup scan limits.
@@ -315,7 +315,7 @@ A Step Functions run timeout of 2 hours prevents hung runs. Start a run only aft
 - **Secrets stay out of Terraform state:** the Google key secret is *created* by Terraform, but its value is set once outside it (console or CLI).
 - **Development vs production:** a Terraform `env` variable (`dev` or `prod`) prefixes every Glue database, S3 prefix and resource name. Changes are deployed and tested in `dev` first. The dashboard reads `prod` only.
 - **Data dictionary (Step 7 deliverable):** `docs/data-dictionary.md`, written from the CMS data dictionary (`NH_Data_Dictionary.pdf` and the PBJ column list in the brief), the silver renames and the mart SQL, and checked against the Glue Data Catalog.
-- The Streamlit dashboard runs locally using the dashboard role. It queries the `marts` views through Athena (via `awswrangler`) and caches results for 24 hours. If shared hosting is needed later, AWS App Runner or a small EC2 instance keeps it within AWS.
+- The Streamlit dashboard (`dashboard/app.py`) runs locally. It queries the `marts` views in the `dashboard` workgroup (1 GB scan limit) with boto3, reading each result's CSV straight from S3, and caches results for 24 hours: two small queries load everything, and every filter is then re-aggregated in pandas from sums, so ratios stay correct. It runs with the developer's AWS credentials; a dedicated dashboard role (below) would be added before sharing it. `awswrangler` was not needed for two queries. If shared hosting is needed later, AWS App Runner or a small EC2 instance keeps it within AWS.
 
 ## 14. Risks and open questions
 
