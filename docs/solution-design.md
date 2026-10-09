@@ -155,6 +155,7 @@ Files are copied **one at a time**: 21 files, about 600 MB in total, take a few 
 | `raw/` | Source files (CSV, UTF-8), in `raw/<dataset>/ingest_date=YYYY-MM-DD/`. Content as received; only the encoding is normalised. | Permanent |
 | `builds/` | Silver (`builds/silver/`) and gold (`builds/gold/`) tables: Iceberg, with Parquet data files, one set per run | Kept for the three most recent builds (§10) |
 | `athena-results/` | Athena query output | Deleted after 7 days (lifecycle rule) |
+| `audit/` | `check_results`: one row per check per run (Iceberg) | Permanent |
 | `glue-scripts/` | The Glue job's script, uploaded by Terraform | Replaced on each deploy |
 
 A bucket lifecycle rule also aborts unfinished multipart uploads after 7 days, so failed uploads don't leave hidden storage charges behind.
@@ -190,7 +191,7 @@ gold (marts):  dim_facility (1) ──< fact_daily_staffing >── (1) dim_date
 | Glue database | What it holds | Type |
 |---|---|---|
 | `raw` | **Bronze.** One table per dataset, registered by `drive_sync`: snake_case column names from the CSV header, every column as text, partitioned by `ingest_date` | Table over CSV files |
-| `staging` | The validation logic: one `base_<dataset>` view per dataset. It reads only the **newest file** of the dataset (for PBJ, the newest file per `CY_Qtr`), renames columns to snake_case, restores the leading zeros of code columns, casts values, and sets a `reject_reason` for every invalid row. Read once per run to build silver. | View |
+| `staging` | The validation logic: one `base_<dataset>` view per dataset. It reads only the **newest file** of the dataset (the newest `ingest_date` partition; each PBJ quarter is its own dataset, because the quarter is in the file name), casts the text columns to their types, and sets a `reject_reason` for every invalid row. Read once per run to build silver. | View |
 | `builds` | Each run's stored tables, named with the run ID. **Silver:** `silver_<dataset>_<run_id>`, every row of the newest file with its `reject_reason`. **Gold:** `<mart>_<run_id>` (for example `fact_daily_staffing_r20260928_060012`), built from the valid silver rows. | Iceberg table |
 | `silver` | **Published silver:** one view per dataset, the valid rows (empty `reject_reason`) of the latest published build | View |
 | `quarantine` | **Published rejects:** one view per dataset, the rows of the same silver table where `reject_reason` is set | View |
@@ -200,7 +201,7 @@ gold (marts):  dim_facility (1) ──< fact_daily_staffing >── (1) dim_date
 | Mart | Grain | Key columns |
 |---|---|---|
 | `fact_daily_staffing` | Facility × day | `provnum`, `work_date`, `mds_census`, hours for each role (RN, RN DON, RN admin, LPN, LPN admin, CNA, NA trainee, med aide) split into `_emp` and `_ctr` |
-| `dim_facility` | Facility | `provnum`, name, city, state, county, county FIPS, plus **ownership type** and **certified beds** from `NH_ProviderInfo`. Built from PBJ's facilities **left-joined** to ProviderInfo, so the 17 facilities missing from ProviderInfo keep their staffing rows, with unknown attributes. |
+| `dim_facility` | Facility | `provnum`, name, city, state, county, county FIPS, plus **ownership type and group**, **certified beds**, overall and staffing ratings and CMS's **reported HPRD** from `NH_ProviderInfo`, and **rehospitalisation** (Claims measures 521 and 551, empty when CMS suppresses the score). Built from PBJ's facilities **left-joined** to ProviderInfo, so the 17 facilities missing from ProviderInfo keep their staffing rows, with ownership "Unknown". |
 | `dim_date` | Day | `work_date`, month, quarter, day of week, weekend flag. Generated for every day between the first and last date in the data. |
 | `agg_facility_month` | Facility × month | Metrics below, pre-computed so dashboard queries stay small and fast |
 
@@ -215,12 +216,12 @@ gold (marts):  dim_facility (1) ──< fact_daily_staffing >── (1) dim_date
 | Nursing hours per resident day (HPRD): total, RN, LPN, nurse aide | Σ hours / Σ `MDScensus` |
 | Total nursing hours | Σ total nurse hours by facility, state, month |
 | Contract-staff share | Σ contract (`_ctr`) hours / Σ total nurse hours |
-| Below-benchmark day rate | % of days with total HPRD < 3.48 or RN HPRD < 0.55 |
+| Below-benchmark day rates | % of days (with residents) below 3.48 total HPRD, % below 0.55 RN HPRD, and % below either. Reported **separately**: the RN threshold sits almost exactly at the national median, so the combined rate alone would mostly reflect RN staffing ([data profile](data-profile.md)). |
 | Weekend staffing gap | Weekend HPRD − weekday HPRD |
 
 The 3.48 / 0.55 thresholds come from the CMS minimum staffing rule published in 2024. That rule has since been challenged and its enforcement delayed, so it is used here **as a benchmark, not a legal requirement**. Its current status must be checked before the final report.
 
-**Additional metrics enabled by the supporting files:** **occupancy** (average daily census ÷ certified beds, from ProviderInfo) and **rehospitalisation** rates (from the Claims measures), compared with HPRD. Both use October 2024 facility attributes against Q2 2024 staffing (§3).
+**Additional metrics enabled by the supporting files:** **occupancy** (average daily census ÷ certified beds, from ProviderInfo) and **rehospitalisation** rates (from the Claims measures), compared with HPRD. Both use October 2024 facility attributes against Q2 2024 staffing (§3). Occupancy is not capped: 261 facility-months exceed 105%, most likely because beds are counted in October 2024 while census is from Q2. The dashboard flags it rather than hiding it.
 
 **Why newest file wins:** if a corrected file removes rows, keeping "the newest row per key" across files would leave the removed rows alive. Reading only the newest file makes a correction replace the dataset (or the quarter, for PBJ) exactly.
 
@@ -239,10 +240,15 @@ Checks happen during ingestion (encoding), in the `base_` views, and as one chec
 | `WorkDate` not a valid date; census or hours not numeric | `base_` view | `reject_reason = invalid_type` → quarantine |
 | Census or any hours value < 0 | `base_` view | `reject_reason = negative_value` → quarantine |
 | Same `(PROVNUM, WorkDate)` twice in one file | `base_` view | First row kept. Others get `reject_reason = duplicate_in_file` → quarantine. (None in the current file; the rule protects re-deliveries.) |
-| Census = 0 but nursing hours > 0 | `base_` view | Row kept with a flag. Excluded from HPRD so it can't divide by zero. |
+| Census > 0 but zero RN, LPN and aide hours (a reporting gap; 2,522 facility-days) | `base_` view | `reject_reason = no_nursing_hours` → quarantine |
+| Total HPRD above 24 (impossible; 75 facility-days) | `base_` view | `reject_reason = hprd_above_24` → quarantine |
+| Certified beds missing or not above 0 (ProviderInfo) | `base_` view | `reject_reason = invalid_beds` → quarantine |
+| Census = 0 | `base_` view | Row kept. Its hours count, but it's excluded from HPRD so it can't divide by zero. |
 | Each mart's key is unique and not null | Check query | **Error:** the build is not published |
-| Every fact `provnum` exists in `dim_facility` | Check query | **Error** |
-| HPRD within a plausible range (0–24) | Check query | Warning |
+| Every fact row has its facility in `dim_facility` and its day in `dim_date` | Check query | **Error** |
+| Silver rows = rows of the newest bronze file, and fact rows = valid silver rows (nothing lost between layers) | Check query | **Error** |
+| Daily HPRD within a plausible range (0–24) | Check query | Warning |
+| Each facility's Q2 HPRD within ±50% of CMS's reported HPRD (`NH_ProviderInfo`, a different period, so informational; 32 facilities on the first build) | Check query | Warning |
 | Row count of the newest file within ±20% of the previous file of the same dataset. Passes when there is no previous file. | Check query | Warning |
 
 All check results are written to `audit.check_results`. If any error-level check has failures, Step Functions stops before publishing, the run fails, and the SNS alert names the failing checks. **The dashboard keeps showing the last good build.** Warnings don't stop the run and can be reviewed in the audit table.

@@ -27,7 +27,7 @@ AWS (S3, Glue, Athena, Step Functions, DynamoDB, Secrets Manager, CloudWatch, SN
 | `docs/` | Solution design, summary, architecture diagram and data profile |
 | `terraform/` | Infrastructure as code  |
 | `glue/drive_sync/` | Ingestion job: copies new or changed CSVs from Google Drive to S3 (Python 3.9, Glue Python shell) |
-| `sql/` | Bronze profiling queries; silver and gold transformations and data checks *(planned)* |
+| `sql/` | Bronze profiling, silver validation views, gold star schema and metrics, data checks, publish views |
 | `scripts/` | Local data checks: file inventory and encoding check |
 | `dashboard/` | Streamlit app *(planned)* |
 | `data/` | Local source files (not committed; see `data/README.md`) |
@@ -145,7 +145,7 @@ Errors and tracebacks are in the `/aws-glue/python-jobs/error` log group.
 - [x] Lake storage, Glue Data Catalog, Athena workgroups
 - [x] Ingestion job (Google Drive → S3), registering bronze tables with every column as text
 - [x] Data profiling on bronze ([findings](docs/data-profile.md))
-- [ ] Silver layer
-- [ ] Gold layer and data checks
+- [x] Silver layer: validation views, Iceberg silver tables, silver and quarantine views
+- [x] Gold layer and data checks: star schema, monthly metrics, checks gating publish
 - [ ] Orchestration with Step Functions
 - [ ] Dashboard
