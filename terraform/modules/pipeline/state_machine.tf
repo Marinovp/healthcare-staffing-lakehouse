@@ -92,22 +92,56 @@ locals {
     BackoffRate     = 2
   }]
 
-  # One Map iteration per SQL statement, one at a time and in order. State names must be unique
-  # across the whole state machine, so each Map gets its own copy with its own name.
+  # One Map iteration per SQL statement, one at a time and in order. Each iteration starts the query,
+  # then checks every 3 seconds until it finishes. (The .sync integration only checks about once a
+  # minute, which made every statement take a minute.) State names must be unique across the whole
+  # state machine, so each Map gets its own copy, named after its step.
   query_processors = {
-    for name in ["RunBuildQuery", "RunPublishQuery"] : name => {
+    for step in ["Build", "Gate", "Publish"] : step => {
       ProcessorConfig = { Mode = "INLINE" }
-      StartAt         = name
+      StartAt         = "Start${step}Query"
       States = {
-        (name) = {
+        ("Start${step}Query") = {
           Type     = "Task"
-          Resource = "arn:aws:states:::athena:startQueryExecution.sync"
+          Resource = "arn:aws:states:::athena:startQueryExecution"
           Arguments = {
             QueryString = "{% $replace($states.input, '__RUN_ID__', $run_id) %}"
             WorkGroup   = var.athena_workgroup_name
           }
+          Output = { QueryExecutionId = "{% $states.result.QueryExecutionId %}" }
+          Retry  = local.athena_retry
+          Next   = "Wait${step}Query"
+        }
+        ("Wait${step}Query") = {
+          Type    = "Wait"
+          Seconds = 3
+          Next    = "Check${step}Query"
+        }
+        ("Check${step}Query") = {
+          Type      = "Task"
+          Resource  = "arn:aws:states:::athena:getQueryExecution"
+          Arguments = { QueryExecutionId = "{% $states.input.QueryExecutionId %}" }
+          Output = {
+            QueryExecutionId = "{% $states.result.QueryExecution.QueryExecutionId %}"
+            State            = "{% $states.result.QueryExecution.Status.State %}"
+            Reason           = "{% $exists($states.result.QueryExecution.Status.StateChangeReason) ? $states.result.QueryExecution.Status.StateChangeReason : '' %}"
+          }
           Retry = local.athena_retry
-          End   = true
+          Next  = "${step}QueryFinished"
+        }
+        ("${step}QueryFinished") = {
+          Type = "Choice"
+          Choices = [
+            { Condition = "{% $states.input.State = 'SUCCEEDED' %}", Next = "${step}QuerySucceeded" },
+            { Condition = "{% $states.input.State in ['FAILED', 'CANCELLED'] %}", Next = "${step}QueryFailed" },
+          ]
+          Default = "Wait${step}Query"
+        }
+        ("${step}QuerySucceeded") = { Type = "Succeed" }
+        ("${step}QueryFailed") = {
+          Type  = "Fail"
+          Error = "QueryFailed"
+          Cause = "{% $states.input.Reason %}"
         }
       }
     }
@@ -125,12 +159,9 @@ resource "aws_sfn_state_machine" "pipeline" {
     StartAt        = "Start"
     States = {
       Start = {
-        Type = "Pass"
-        Assign = {
-          run_id            = "{% ${local.run_id_expression} %}"
-          failed_checks_sql = local.failed_checks_sql
-        }
-        Next = "CopyFromDrive"
+        Type   = "Pass"
+        Assign = { run_id = "{% ${local.run_id_expression} %}" }
+        Next   = "CopyFromDrive"
       }
 
       CopyFromDrive = {
@@ -166,25 +197,22 @@ resource "aws_sfn_state_machine" "pipeline" {
         Type           = "Map"
         Items          = local.build_sql
         MaxConcurrency = 1
-        ItemProcessor  = local.query_processors["RunBuildQuery"]
+        ItemProcessor  = local.query_processors["Build"]
         Next           = "CountFailedChecks"
       }
 
       CountFailedChecks = {
-        Type     = "Task"
-        Resource = "arn:aws:states:::athena:startQueryExecution.sync"
-        Arguments = {
-          QueryString = "{% $replace($failed_checks_sql, '__RUN_ID__', $run_id) %}"
-          WorkGroup   = var.athena_workgroup_name
-        }
-        Retry = local.athena_retry
-        Next  = "ReadFailedChecks"
+        Type           = "Map"
+        Items          = [local.failed_checks_sql]
+        MaxConcurrency = 1
+        ItemProcessor  = local.query_processors["Gate"]
+        Next           = "ReadFailedChecks"
       }
 
       ReadFailedChecks = {
         Type      = "Task"
         Resource  = "arn:aws:states:::athena:getQueryResults"
-        Arguments = { QueryExecutionId = "{% $states.input.QueryExecution.QueryExecutionId %}" }
+        Arguments = { QueryExecutionId = "{% $states.input[0].QueryExecutionId %}" }
         Assign    = { failed_checks = "{% $number($states.result.ResultSet.Rows[1].Data[0].VarCharValue) %}" }
         Next      = "ChecksPassed"
       }
@@ -205,7 +233,7 @@ resource "aws_sfn_state_machine" "pipeline" {
         Type           = "Map"
         Items          = local.publish_sql
         MaxConcurrency = 1
-        ItemProcessor  = local.query_processors["RunPublishQuery"]
+        ItemProcessor  = local.query_processors["Publish"]
         Next           = "MarkProcessed"
       }
 
