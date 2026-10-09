@@ -158,5 +158,5 @@ Follow the run in the Step Functions console. Check results are in `hsl_dev_audi
 - [x] Data profiling on bronze ([findings](docs/data-profile.md))
 - [x] Silver layer: validation views, Iceberg silver tables, silver and quarantine views
 - [x] Gold layer and data checks: star schema, monthly metrics, checks gating publish
-- [ ] Orchestration with Step Functions
+- [x] Orchestration with Step Functions: write-audit-publish, failure alerts, full run in about 3 minutes
 - [ ] Dashboard
