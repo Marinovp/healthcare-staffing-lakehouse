@@ -25,3 +25,15 @@ module "ingestion" {
   raw_database_name = module.lakehouse.catalog_database_names["raw"]
   drive_folder_id   = var.drive_folder_id
 }
+
+module "pipeline" {
+  source = "../../modules/pipeline"
+
+  name_prefix           = local.name_prefix
+  catalog_prefix        = local.catalog_prefix
+  lake_bucket_name      = module.lakehouse.lake_bucket_name
+  athena_workgroup_name = module.lakehouse.athena_workgroup_names["pipeline"]
+  glue_job_name         = module.ingestion.drive_sync_job_name
+  manifest_table_name   = module.ingestion.dynamodb_manifest_table_name
+  alert_email           = var.alert_email
+}
