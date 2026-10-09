@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Draft for SME review |
-| **Version** | 0.16 summary (2026-10-07) |
+| **Version** | 0.17 summary (2026-10-09) |
 | **Full design** | [solution-design.md](solution-design.md): component reasoning, data-quality rules, failure handling, security details |
 | **Decision requested** | Approve the architecture below so the build (Step 4) can start |
 
@@ -19,9 +19,9 @@ Management needs one view of nursing-facility staffing: nurse hours, contract-st
 
 A run has five steps, orchestrated by **Step Functions** and **started by hand** (Step Functions console or AWS CLI), since this is a one-time project:
 
-1. **Copy:** a Glue Python shell job compares the Drive folder with a DynamoDB manifest. It then copies each new or changed CSV to S3 `raw/`, verifying its MD5 and converting it to UTF-8.
+1. **Copy:** a Glue Python shell job compares the Drive folder with a DynamoDB manifest. It then copies each new or changed CSV to S3 `raw/`, verifying its MD5 and converting it to UTF-8, and registers it as a bronze table with every column as text.
 2. **Anything new?** Step Functions checks the manifest. If no file was landed, the run ends here.
-3. **Crawl, build + audit:** a Glue crawler registers the new files as bronze tables. Athena then reads the CSVs **in place** (no load step), writes this run's validated (silver) and modelled (gold) tables to S3, and runs the data checks.
+3. **Build + audit:** Athena reads the CSVs **in place** (no load step), writes this run's validated (silver) and modelled (gold) tables to S3, and runs the data checks.
 4. **Publish:** only if the checks pass, the silver, quarantine and dashboard views are switched to the new tables, and old builds are cleaned up.
 5. **Mark done:** the files are marked `PROCESSED` in the manifest.
 
@@ -31,7 +31,7 @@ The dashboard queries the published views through **Athena**.
 
 | Layer | In this design |
 |---|---|
-| **Bronze** (raw) | The source CSV files in S3 `raw/` (content as received, encoding normalised to UTF-8): never changed afterwards, versioned, the basis for rebuilding everything. Tables are created by a Glue crawler. |
+| **Bronze** (raw) | The source CSV files in S3 `raw/` (content as received, encoding normalised to UTF-8): never changed afterwards, versioned, the basis for rebuilding everything. The copy job registers one table per dataset, with every column as text, so codes arrive exactly as delivered. |
 | **Silver** (clean) | One validated, typed table per dataset, built from the newest bronze file each run. Valid rows are published as `silver` views, and rejected rows as `quarantine` views with a reason. |
 | **Gold** (business) | The star schema and metrics, built from the valid silver rows and published as the `marts` views the dashboard reads |
 
@@ -45,11 +45,11 @@ Silver and gold are Iceberg tables in S3 (Parquet), and each is published only a
 | Glue Python shell job | Copies the files from Drive with plain Python (**Python 3.9**, the version AWS provides for Glue Python shell): no servers and no time limit, for a few cents a month. |
 | DynamoDB | File manifest that makes ingestion incremental and restartable. |
 | S3 | The data lake: original files (bronze), silver and gold tables, and query output. |
-| Glue Data Catalog + crawler | Table definitions for Athena. A crawler creates the bronze tables from the files, so no schemas are written by hand. (No Glue Spark jobs are used.) |
+| Glue Data Catalog | Table definitions for Athena. The copy job registers the bronze tables from each file's header, so no schemas are written by hand. (No Glue Spark jobs are used.) |
 | Athena | All SQL: validation, building the marts, checks, and dashboard queries. Billed per data scanned, with nothing running between queries. |
 | Secrets Manager | Holds the Google key. |
 | CloudWatch + SNS | Logs, alarms and failure emails. |
-| Terraform | Deploys all AWS resources, including the crawler and the build SQL, using the team's existing Terraform setup. |
+| Terraform | Deploys all AWS resources, including the Glue job and the build SQL, using the team's existing Terraform setup. |
 
 ## Key design choices
 
@@ -92,8 +92,8 @@ The supporting files also enable **occupancy** (census ÷ certified beds) and **
 | K1 | Supporting files may lack beds, overtime or length-of-stay data | Partly resolved: beds and rehospitalisation are available. Overtime and length of stay aren't, so they aren't produced. |
 | K3 | Dashboard queries take 1–3 seconds | A 24-hour cache and small pre-aggregated tables hide it. |
 | K4 | Glue Python shell runs only Python 3.9, which no longer gets upstream security fixes | Accepted for a one-time project. The job is developed and run in a dedicated Python 3.9 environment, with library versions pinned. |
-| K5 | The source layout changes | The crawler updates the table. If a column the build needs is missing, the build fails and nothing is published. |
-| K12 | The crawler infers types, so an identifier code could lose its leading zeros | Silver restores fixed-width codes (CCN 6, FIPS 3, ZIP 5) with `lpad`. Code-column types are checked after the first full crawl. |
+| K5 | The source layout changes | The copy job updates the bronze table to the new header. If a column the build needs is missing, the build fails and nothing is published. |
+| K12 | Inferred column types could misread identifier codes | Happened and resolved: a Glue crawler typed CCNs as numbers, but some contain a letter (`39A433`), and queries failed. Bronze now stores every column as text, and silver checks code formats. See the [data profile](data-profile.md). |
 
 The full risk list (K1–K13) is in the [full design](solution-design.md).
 

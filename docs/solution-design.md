@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Draft for SME review |
-| **Version** | 0.16 (2026-10-07): `drive_sync` as built: each file goes through a temporary file (the encoding is only known after reading the whole file), files are copied one at a time, and the job is verified by real runs instead of unit tests. (0.15: Glue Python shell, Python 3.9, as provided by AWS; libraries installed by Glue at start. 0.14: profiling results; Google Drive layout; UTF-8 conversion; Glue crawler.) |
+| **Version** | 0.17 (2026-10-09): the Glue crawler is removed. Its type guessing broke queries on PBJ (CCNs such as `39A433`), so `drive_sync` now registers each bronze table itself, with every column as text. Profiling results are in [data-profile.md](data-profile.md). (0.16: `drive_sync` as built: temporary file, one file at a time, verified by real runs. 0.15: Glue Python shell, Python 3.9, as provided by AWS. 0.14: Google Drive layout; UTF-8 conversion.) |
 | **Decision requested** | Approve the architecture in §5 so the build (Step 4) can start |
 | **Diagram** | [architecture.drawio.svg](architecture.drawio.svg): one file that is both the editable draw.io source and the image shown below |
 | **Summary** | [solution-design-summary.md](solution-design-summary.md) |
@@ -64,7 +64,7 @@ This document proposes an AWS pipeline that moves the source files from Google D
 
 *To edit the diagram, open `architecture.drawio.svg` in draw.io (desktop, app.diagrams.net, or the VS Code Draw.io extension) and save. The same file is both the source and the image.*
 
-**Flow in one paragraph.** Someone starts a Step Functions run by hand, from the console or the AWS CLI. First, a Glue Python shell job (`drive_sync`) lists the `HealthCare_Metrics/` Drive folder and its subfolder, and compares each file with the DynamoDB manifest. For every new or changed CSV file, it downloads the file, verifies the MD5 of the original bytes, converts the text to UTF-8, uploads it to S3 `raw/`, and marks it `LANDED`. Step Functions then checks the manifest: if no file is `LANDED`, the run ends. Otherwise it runs the **Glue crawler**, which registers the new files as tables and partitions. Athena reads the landed CSVs **where they sit in S3**, so there is no load step. Step Functions runs the build as a series of Athena queries: it refreshes the validation views, writes this run's **silver** tables (validated data) and **gold** tables (the star schema and metrics) to S3 as Iceberg tables, and runs the data checks. Only if the checks pass does it **publish**: the silver, quarantine and dashboard views are switched to the new tables and old builds are cleaned up. Finally, the files are marked as processed. The Streamlit dashboard queries the published views through Athena.
+**Flow in one paragraph.** Someone starts a Step Functions run by hand, from the console or the AWS CLI. First, a Glue Python shell job (`drive_sync`) lists the `HealthCare_Metrics/` Drive folder and its subfolder, and compares each file with the DynamoDB manifest. For every new or changed CSV file, it downloads the file, verifies the MD5 of the original bytes, converts the text to UTF-8, uploads it to S3 `raw/`, registers it as a bronze table (every column as text) with a new partition, and marks it `LANDED`. Step Functions then checks the manifest: if no file is `LANDED`, the run ends. Athena reads the landed CSVs **where they sit in S3**, so there is no load step. Step Functions runs the build as a series of Athena queries: it refreshes the validation views, writes this run's **silver** tables (validated data) and **gold** tables (the star schema and metrics) to S3 as Iceberg tables, and runs the data checks. Only if the checks pass does it **publish**: the silver, quarantine and dashboard views are switched to the new tables and old builds are cleaned up. Finally, the files are marked as processed. The Streamlit dashboard queries the published views through Athena.
 
 ### Why a lakehouse with Athena SQL
 
@@ -95,7 +95,7 @@ The design follows the medallion pattern for data lakes. Each layer is built onl
 
 | Layer | Purpose | In this design | Stored as |
 |---|---|---|---|
-| **Bronze** | Source data as received, never changed afterwards; the basis for reprocessing | S3 `raw/`, read through the `raw` tables that the Glue crawler creates | The source CSV files (content unchanged, encoding normalised to UTF-8), versioned, partitioned by `ingest_date` |
+| **Bronze** | Source data as received, never changed afterwards; the basis for reprocessing | S3 `raw/`, read through the `raw` tables that `drive_sync` registers (every column as text) | The source CSV files (content unchanged, encoding normalised to UTF-8), versioned, partitioned by `ingest_date` |
 | **Silver** | One clean, typed, validated version of each dataset | Built each run from the newest bronze file by the `base_` validation views, and stored in `builds/silver/`. Published as `silver.<dataset>` (valid rows) and `quarantine.<dataset>` (rejected rows, with a reason). | Iceberg tables (Parquet data files) |
 | **Gold** | The business-ready model for the dashboard: star schema and metrics | Built each run from the valid silver rows, stored in `builds/gold/`, and published as the `marts` views | Iceberg tables (Parquet data files) |
 
@@ -106,17 +106,16 @@ Everything above bronze can be deleted and recreated just by rerunning the pipel
 | Component | Role | Why this service | Alternatives considered |
 |---|---|---|---|
 | **Manual start** (Step Functions console or AWS CLI) | Starts a run when one is needed | This is a one-time project, so a schedule adds nothing. Clicking **Start execution**, or running `aws stepfunctions start-execution`, is all it takes. A rerun copies only new or changed files. | EventBridge Scheduler (a daily run), used until v0.11. |
-| **Step Functions** (Standard) | Orders the steps, handles retries and branching, and records each run's history | The whole pipeline can be seen and rerun from the console. Starts the Glue job and each Athena query and waits for them natively (`.sync`), starts the crawler and polls it until it finishes, and reads and updates DynamoDB directly. | MWAA (Airflow) needs an always-on environment of about $350/month, far too much for 5 steps. |
-| **Glue Python shell job `drive_sync`** | Lists Drive, diffs against the manifest, and copies each new or changed CSV to S3 as UTF-8 after verifying its MD5 | Plain Python run by Glue on demand, with **no 15-minute limit**, so one job handles every file with no per-file splitting. **Runs Python 3.9**, the only version AWS offers for Glue Python shell jobs (per AWS's documentation). Glue is already in the design for its Data Catalog and crawler. Costs cents: 1/16 DPU with a 1-minute minimum. | Lambda: Python 3.14 and instant start, but a 15-minute limit that forced a split into two functions plus a Map state (used until v0.9). Glue 6.0 Spark job: Python 3.13, but a Spark cluster isn't needed to copy files. Both were compared on 2026-10-07; Python shell was kept for simplicity. |
+| **Step Functions** (Standard) | Orders the steps, handles retries and branching, and records each run's history | The whole pipeline can be seen and rerun from the console. Starts the Glue job and each Athena query and waits for them natively (`.sync`), and reads and updates DynamoDB directly. | MWAA (Airflow) needs an always-on environment of about $350/month, far too much for 5 steps. |
+| **Glue Python shell job `drive_sync`** | Lists Drive, diffs against the manifest, and copies each new or changed CSV to S3 as UTF-8 after verifying its MD5 | Plain Python run by Glue on demand, with **no 15-minute limit**, so one job handles every file with no per-file splitting. **Runs Python 3.9**, the only version AWS offers for Glue Python shell jobs (per AWS's documentation). Glue is already in the design for its Data Catalog. Costs cents: 1/16 DPU with a 1-minute minimum. | Lambda: Python 3.14 and instant start, but a 15-minute limit that forced a split into two functions plus a Map state (used until v0.9). Glue 6.0 Spark job: Python 3.13, but a Spark cluster isn't needed to copy files. Both were compared on 2026-10-07; Python shell was kept for simplicity. |
 | **Secrets Manager** | Stores the Google service-account key | Encrypted and access-controlled through IAM. Keeps credentials out of code, environment variables and Terraform state. | SSM Parameter Store (SecureString) also works. Secrets Manager was chosen for rotation support. |
 | **DynamoDB manifest** | One item per Drive file: MD5, modified time, S3 key, status | Makes ingestion incremental and restartable. On-demand billing costs next to nothing at this volume. Step Functions reads and updates it natively. | A JSON manifest file in S3 has no per-item updates and needs custom code to change it. Listing S3 can't detect changed content. |
 | **S3** | The data lake: `raw/` (bronze: original files), `builds/` (silver and gold tables), `athena-results/` (query output) | Cheap, durable storage separated from compute. The immutable raw copy is what makes every downstream table rebuildable. | |
-| **Glue Data Catalog** | Table definitions for every table and view | Athena's metadata store, free at this size. Bronze tables are created by the crawler (below); silver, gold, quarantine and audit tables by the build SQL. | — |
-| **Glue crawler `hsl-dev-raw`** | Scans `raw/` after each ingestion, creating one bronze table per dataset folder and registering new `ingest_date` partitions | No hand-written schemas for 21 files and about 400 columns, and new partitions appear without maintenance. Runs as a role that can only read `raw/`. | Tables defined explicitly from a contract file (`datasets.json`) with every column as text: safer for identifiers, but more to build. The crawler's type-inference risk is handled in silver (§7). |
+| **Glue Data Catalog** | Table definitions for every table and view | Athena's metadata store, free at this size. Bronze tables are registered by `drive_sync` from each file's header (§7); silver, gold, quarantine and audit tables by the build SQL. | A Glue crawler (used until v0.16): it guessed column types from a sample, typed CCNs such as `39A433` as numbers, and broke queries on PBJ. Tables written by hand in Terraform: about 400 columns to maintain. |
 | **Amazon Athena** | Runs all SQL: validation views, silver and gold builds, checks, and dashboard queries | Serverless SQL over S3, billed per data scanned ($5/TB), with no infrastructure. Reads CSV in place and writes Parquet-based Iceberg tables. | See "Alternatives rejected" above. |
 | **Apache Iceberg** (table format) | Format of the silver and gold tables in `builds/` | Tables that Athena creates and drops cleanly, including their data files. Stored as Parquet, so gold builds and dashboard queries scan very little. | Plain Parquet tables leave their files behind when dropped, which would need a separate cleanup job. |
 | **CloudWatch + SNS** | Logs, metrics, alarms, and failure email | Built in for Glue, Athena and Step Functions, with no extra tooling. | |
-| **Terraform** | Defines all AWS resources as code, including the crawler and the build SQL | Already the team's infrastructure tool, so there's one workflow (`plan` → `apply`) for everything. | AWS CDK or CloudFormation are AWS-native, but would add a second infrastructure tool alongside the existing Terraform setup. |
+| **Terraform** | Defines all AWS resources as code, including the Glue job and the build SQL | Already the team's infrastructure tool, so there's one workflow (`plan` → `apply`) for everything. | AWS CDK or CloudFormation are AWS-native, but would add a second infrastructure tool alongside the existing Terraform setup. |
 
 ## 6. Incremental ingestion (`drive_sync` Glue job)
 
@@ -125,12 +124,13 @@ The job reads **one** Drive folder, `HealthCare_Metrics/`, recursively: PBJ sits
 **`drive_sync`** (one Glue Python shell run per pipeline run):
 1. Read the service-account key from Secrets Manager. Connect to the Drive API with the read-only scope `drive.readonly`.
 2. List every file in `HealthCare_Metrics/` and its subfolders (id, name, MIME type, `md5Checksum`), following pagination, and keep only the **CSV** files. Anything else, such as the data dictionary PDF, is ignored.
-3. Compare each CSV with the manifest. **New** (no item) or **changed** (a different `md5Checksum`) → copy it (steps 4–7). Anything else is skipped. An unchanged file that is still `LANDED` (a previous run failed after landing it) needs no action from the job, because it's already in S3 and Step Functions picks it up from the manifest.
+3. Compare each CSV with the manifest. **New** (no item) or **changed** (a different `md5Checksum`) → copy it (steps 4–9). Anything else is skipped. An unchanged file that is still `LANDED` (a previous run failed after landing it) needs no action from the job, because it's already in S3 and Step Functions picks it up from the manifest.
 4. **Download** the file in 8 MB chunks to a temporary file on the job's local disk (Glue provides about 14 GiB in `/tmp`). The Drive client retries 429 and 5xx errors with exponential backoff.
 5. **Read it once, line by line.** Each line is added to the MD5 of the **original bytes**, decoded as UTF-8 or, failing that, as **Windows-1252** (the only other encoding found when profiling, used by PBJ), and written as **UTF-8** to a second temporary file. A line that is neither fails the file.
 6. Compare the MD5 with Drive's value. If they don't match, the file fails **before anything is uploaded**.
 7. **Upload** the UTF-8 file to `s3://<bucket>/raw/<dataset>/ingest_date=YYYY-MM-DD/<file name>`, where `<dataset>` is the file name in snake_case (for example `nh_provider_info_oct2024`). That folder becomes the bronze table's name. boto3's managed upload (`upload_fileobj`) sends large files as a multipart upload and retries failed parts itself.
-8. Write the manifest item with `status = LANDED` and the MD5. This happens **after** the upload: if the job dies between the two, the next run simply copies the file again. The reverse order could mark a file as landed that never arrived.
+8. **Register the bronze table** from the file's header (every column as text, §7) and add the `ingest_date` partition.
+9. Write the manifest item with `status = LANDED` and the MD5. This happens **last**: if the job dies before it, the next run simply copies and registers the file again. The reverse order could mark a file as landed that never arrived.
 
 **Why a temporary file, not a pure stream:** a file's encoding is only known after reading all of it (a single Windows-1252 byte in the last row makes the whole file Windows-1252). Spooling to local disk keeps memory use to one chunk at a time and keeps the code simple. Both temporary files are deleted as soon as the file is done.
 
@@ -159,15 +159,17 @@ Files are copied **one at a time**: 21 files, about 600 MB in total, take a few 
 
 A bucket lifecycle rule also aborts unfinished multipart uploads after 7 days, so failed uploads don't leave hidden storage charges behind.
 
-### Bronze tables (Glue crawler, no load step)
+### Bronze tables (registered by `drive_sync`, no load step)
 
-The crawler `hsl-dev-raw` runs after each ingestion and creates or updates one table per dataset folder in the `raw` database:
-- **One table per dataset folder** (`TableLevelConfiguration = 3`: bucket, then `raw/`, then the dataset folder), with the `ingest_date=` folders below it as **partitions**.
-- **A CSV classifier states that the first row is a header and that values may be quoted**, so the header is never read as data (OpenCSVSerde, header line skipped) and facility names containing commas parse correctly.
-- **Names and types come from the files.** Column names are the CSV headers, lowercased, and may contain spaces and brackets, for example `cms certification number (ccn)`. Silver's `base_` views rename them once to snake_case, so no later query has to quote them.
-- **Identifier codes.** Types are inferred per file. If a fixed-width code (CCN/`PROVNUM` 6 characters, county FIPS 3, ZIP 5) is inferred as a number, its leading zeros are lost when read, so silver restores them with `lpad`, for example `lpad(cast(provnum AS varchar), 6, '0')`. After the first full crawl, the type of every code column is checked. *(A test crawl of `NH_ProviderInfo` inferred the CCN as text, with the leading zeros kept and 14,814 rows, matching the profiling count.)*
-- **Schema changes** update the table (`UPDATE_IN_DATABASE`). If a dataset folder disappears, the deletion is only logged, and the table stays.
+After uploading a file, `drive_sync` creates or updates its table in the `raw` database, then writes the manifest:
+- **One table per dataset folder**, with the `ingest_date=` folders below it as **partitions**. Each landed file adds its partition.
+- **Every column is text** (`string`). Codes such as the CCN (`015009`, `39A433`), county FIPS and ZIP keep their exact value, leading zeros included, and no query fails on a value of an unexpected type. Silver converts types in one place, and a value that doesn't convert is quarantined with a reason.
+- **Column names come from the file's header**, converted to snake_case (`CMS Certification Number (CCN)` → `cms_certification_number_ccn`, `WorkDate` → `work_date`), so no query has to quote them.
+- **OpenCSVSerde with the header line skipped**, so quoted values such as facility names containing commas parse correctly.
+- **Schema changes** follow the file: if a new file has different columns, the table is updated to its header.
 - Athena's `"$path"` pseudo-column tells each row which file it came from. The validation views use it to pick the newest file (§8).
+
+**Why not a Glue crawler:** the crawler used until v0.16 guessed each column's type from a sample at the start of the file. It typed PBJ's `provnum` as a number, but 235 facilities have CCNs with a letter (`39A433`), and it typed `hrs_rn_ctr` as an integer because the early rows are zero. Athena then failed on any query reading those columns. A classifier can only override types column by column, file by file. Registering the tables in the job removes the problem, one service, the crawler's 10-minute minimum billing, and a polling loop in Step Functions. Details: [data-profile.md](data-profile.md#why-bronze-is-all-text).
 
 Every landed file stays in `raw/` as history. Only the newest file of each dataset is used downstream, so a corrected file re-delivered under the same name lands in the same folder with a new `ingest_date` and replaces the old one.
 
@@ -187,7 +189,7 @@ gold (marts):  dim_facility (1) ──< fact_daily_staffing >── (1) dim_date
 
 | Glue database | What it holds | Type |
 |---|---|---|
-| `raw` | **Bronze.** One table per dataset, created by the crawler: column names and types inferred from the CSV, partitioned by `ingest_date` | Table over CSV files |
+| `raw` | **Bronze.** One table per dataset, registered by `drive_sync`: snake_case column names from the CSV header, every column as text, partitioned by `ingest_date` | Table over CSV files |
 | `staging` | The validation logic: one `base_<dataset>` view per dataset. It reads only the **newest file** of the dataset (for PBJ, the newest file per `CY_Qtr`), renames columns to snake_case, restores the leading zeros of code columns, casts values, and sets a `reject_reason` for every invalid row. Read once per run to build silver. | View |
 | `builds` | Each run's stored tables, named with the run ID. **Silver:** `silver_<dataset>_<run_id>`, every row of the newest file with its `reject_reason`. **Gold:** `<mart>_<run_id>` (for example `fact_daily_staffing_r20260928_060012`), built from the valid silver rows. | Iceberg table |
 | `silver` | **Published silver:** one view per dataset, the valid rows (empty `reject_reason`) of the latest published build | View |
@@ -232,7 +234,7 @@ Checks happen during ingestion (encoding), in the `base_` views, and as one chec
 |---|---|---|
 | File is neither UTF-8 nor Windows-1252 | `drive_sync` | **The file fails and the run alerts.** |
 | An expected column is missing (the source layout changed) | `base_` view | **The build fails**, because the view names the column. Nothing is published and the run alerts. |
-| A code column was inferred as a number | `base_` view | `lpad` restores its documented width (§7) |
+| A code doesn't match its documented format (CCN `^[0-9]{2}[0-9A-Z][0-9]{3}$`, FIPS 3 digits) | `base_` view | Row quarantined with a reason (codes are text in bronze, so they arrive exactly as delivered, §7) |
 | `PROVNUM` or `WorkDate` missing | `base_` view | `reject_reason = missing_key` → quarantine |
 | `WorkDate` not a valid date; census or hours not numeric | `base_` view | `reject_reason = invalid_type` → quarantine |
 | Census or any hours value < 0 | `base_` view | `reject_reason = negative_value` → quarantine |
@@ -253,11 +255,11 @@ The `silver` and `quarantine` views are two filters on the same stored silver ta
 |---|---|---|---|
 | 1. `drive_sync` (Glue job) | List Drive and compare with the manifest. For each new or changed CSV: download, MD5 check, convert to UTF-8, upload to `raw/`, mark `LANDED`. | Inside the job: exponential backoff on Drive API 429 and 5xx errors. Plus 1 retry of the whole job. | Run fails and alerts. Files that did land stay `LANDED` and are built on the next run. |
 | 2. Anything to build? | Scan the manifest for `LANDED` files. None → end the run. | 3 attempts | Run fails and alerts. |
-| 3. Crawl, build + audit | Run the Glue crawler and wait for it, then Athena queries in order: refresh the validation views, create this run's silver tables, then its gold tables, in `builds`, then write the check results | 1 retry for the crawler and for each query | Run fails and alerts. Nothing has been published. |
+| 3. Build + audit | Athena queries in order: refresh the validation views, create this run's silver tables, then its gold tables, in `builds`, then write the check results | 1 retry for each query | Run fails and alerts. Nothing has been published. |
 | 4. Publish | If no error-level check failed: point the `silver`, `quarantine` and `marts` views at this run's tables, then drop builds older than the three most recent | 1 retry per query | Run fails and alerts. See "Publishing" below. |
 | 5. Mark `PROCESSED` | Update the manifest | 3 attempts | Run fails. The files are simply rebuilt next time, which is harmless. |
 
-The Glue job and every Athena query are started with Step Functions' native integrations (`glue:startJobRun.sync` and `athena:startQueryExecution.sync`), which wait for them to finish. The **crawler is the one exception**: it has no waiting integration, so Step Functions starts it and checks its state every 30 seconds until it's ready. The build SQL is part of the state machine definition (§13), and the run ID comes from the run's start time, so every table name is unique.
+The Glue job and every Athena query are started with Step Functions' native integrations (`glue:startJobRun.sync` and `athena:startQueryExecution.sync`), which wait for them to finish. The build SQL is part of the state machine definition (§13), and the run ID comes from the run's start time, so every table name is unique.
 
 ### Write-audit-publish
 
@@ -279,9 +281,8 @@ A Step Functions run timeout of 2 hours prevents hung runs. Start a run only aft
 - **No network or database to secure:** there's no VPC, no database endpoint and no database password. All access is through IAM-authenticated AWS APIs.
 - **Athena workgroups:** `pipeline` for the build and `dashboard` for the app. Each has its own output location under `athena-results/` and a **per-query scan limit** (for example 10 GB), so a runaway query is stopped automatically.
 - **IAM:** one least-privilege role per component:
-  - `drive_sync` Glue job: read one secret, read `glue-scripts/`, write `raw/`, read and write the manifest table, write its logs.
-  - Glue crawler: read-only on `raw/*`, plus AWS's managed `AWSGlueServiceRole` for the catalog and logs.
-  - Step Functions: start the `drive_sync` job; start and read the crawler; run queries in the `pipeline` workgroup; read `raw/`, write `builds/` and its results prefix; create and drop tables in the `staging`, `builds`, `silver`, `quarantine`, `marts` and `audit` databases; scan and update the manifest table.
+  - `drive_sync` Glue job: read one secret, read `glue-scripts/`, write `raw/`, read and write the manifest table, register bronze tables, write its logs. The catalog and log permissions come from AWS's managed `AWSGlueServiceRole`, which allows all Glue actions. That's broader than the job needs (it only writes to the `raw` database), and is accepted for this one-time project. A production setup would replace it with a policy limited to the `raw` database and the job's log group.
+  - Step Functions: start the `drive_sync` job; run queries in the `pipeline` workgroup; read `raw/`, write `builds/` and its results prefix; create and drop tables in the `staging`, `builds`, `silver`, `quarantine`, `marts` and `audit` databases; scan and update the manifest table.
   - Dashboard: run queries in the `dashboard` workgroup; read the `marts` views and the `builds/` data behind them; write its results prefix.
 - **Google access:** the service account has read-only access to the shared `HealthCare_Metrics` folder only.
 - **Monitoring:** the Glue job and Step Functions log to CloudWatch. An EventBridge rule on Step Functions `FAILED` or `TIMED_OUT` publishes to an SNS email topic.
@@ -293,7 +294,6 @@ A Step Functions run timeout of 2 hours prevents hung runs. Start a run only aft
 |---|---|---|
 | Step Functions, EventBridge (failure rule), DynamoDB | A handful of manual runs | ≈ $0 (free tier) |
 | Glue job (`drive_sync`) | A few minutes per run at 1/16 DPU ($0.44 per DPU-hour, 1-minute minimum) | < $0.10 |
-| Glue crawler | One run per ingestion, billed per DPU-hour with a 10-minute minimum | ≈ $0.15 per run |
 | Athena | A build reads the raw CSVs once to build silver, then small Parquet tables for gold (≈ $0.01). Dashboard queries read small Parquet tables (10 MB billing minimum each). | < $1 |
 | Glue Data Catalog | Under 100 tables and views | $0 (free tier) |
 | S3 | < 5 GB across all prefixes | ≈ $0.10 |
@@ -302,9 +302,9 @@ A Step Functions run timeout of 2 hours prevents hung runs. Start a run only aft
 
 ## 13. Deployment and dashboard access
 
-- All AWS resources are defined in one Terraform configuration and deployed to a single account in `us-west-2` (Oregon): S3 bucket and lifecycle rules, DynamoDB table, the `drive_sync` Glue job, Glue databases, the crawler and its classifier, Athena workgroups, state machine, failure alert (EventBridge rule and SNS topic) and budget.
+- All AWS resources are defined in one Terraform configuration and deployed to a single account in `us-west-2` (Oregon): S3 bucket and lifecycle rules, DynamoDB table, the `drive_sync` Glue job, Glue databases, Athena workgroups, state machine, failure alert (EventBridge rule and SNS topic) and budget.
 - Terraform state is stored remotely (S3, encrypted, with state locking), in line with the existing Terraform setup. The job is an `aws_glue_job` of type `pythonshell`. It runs **Python 3.9**, as provided by AWS. Its script is uploaded to `glue-scripts/` with `aws_s3_object` on each `apply`, and the Google client libraries are installed by Glue at start (`--additional-python-modules`, pinned to the versions in `glue/drive_sync/requirements.txt`).
-- **Bronze tables are not defined in Terraform.** The crawler, which is, creates them from the files.
+- **Bronze tables are not defined in Terraform.** The `drive_sync` job, which is, registers them from each file's header.
 - **Build SQL** lives in the repository's `sql/` folder, one file per view, silver table, gold table and check. Terraform embeds the files into the state machine definition with `templatefile`, so each deploy ships exactly the SQL that runs, and there's no separate SQL deployment step.
 - **Secrets stay out of Terraform state:** the Google key secret is *created* by Terraform, but its value is set once outside it (console or CLI).
 - **Development vs production:** a Terraform `env` variable (`dev` or `prod`) prefixes every Glue database, S3 prefix and resource name. Changes are deployed and tested in `dev` first. The dashboard reads `prod` only.
@@ -323,14 +323,14 @@ A Step Functions run timeout of 2 hours prevents hung runs. Start a run only aft
 | K2 | Athena cost grows (for example, a query over the raw CSVs from the dashboard) | The dashboard role can read only the `marts` views. Per-query scan limits on both workgroups. Budget alert. |
 | K3 | Dashboard queries take 1–3 seconds | Acceptable for an internal dashboard. The 24-hour cache and small pre-aggregated tables hide it for repeat views. |
 | K4 | Glue Python shell runs **only Python 3.9** (per AWS's documentation), and Python 3.9 stopped receiving upstream security fixes in October 2025 | Accepted for a one-time project. The job is developed and run locally in a **dedicated Python 3.9 environment** (`glue/drive_sync/.venv`), so local runs match AWS. Library versions are pinned to releases that support 3.9. The job's 60-minute timeout and the failure alert cover a copy that runs unexpectedly long. If the project continued, the job would move to Lambda (Python 3.14) or a newer Glue runtime. |
-| K5 | Source layout changes (columns added, removed or reordered) | The crawler updates the bronze table. The silver `base_` view names the columns it needs, so a missing column **fails the build** and alerts, and nothing is published. |
-| K6 | Drive folder structure or file names change | The job reads one folder by its Drive ID, and the manifest is keyed on each file's Drive ID, not its name. New files are landed and crawled. |
+| K5 | Source layout changes (columns added, removed or reordered) | `drive_sync` updates the bronze table to the new header. The silver `base_` view names the columns it needs, so a missing column **fails the build** and alerts, and nothing is published. |
+| K6 | Drive folder structure or file names change | The job reads one folder by its Drive ID, and the manifest is keyed on each file's Drive ID, not its name. New files are landed and registered as tables. |
 | K7 | Google service-account key leak | Read-only scope on one folder, stored only in Secrets Manager, and rotated after the project. |
 | K8 | Staffing benchmark thresholds lose relevance | Presented as benchmarks with their source and date. Current regulatory status checked before the final report. |
 | K9 | Plain SQL has no automatic lineage or test framework (which dbt would give) | Checks are explicit queries logged in `audit.check_results`. Dependencies are kept simple (raw → views → builds → marts), and the data dictionary is maintained from the CMS dictionary, the catalog and the SQL. |
 | K10 | Publishing switches the `silver`, `quarantine` and `marts` views in batches rather than all at once | For a few seconds, some views can point at a newer build than others. Accepted, because publishes are rare, the dashboard caches, and gold is switched last. A failed publish alerts, and a rerun fixes it. |
 | K11 | Source files may not be UTF-8, which would garble text such as facility names | **Confirmed for PBJ** (Windows-1252, 455 lines, 5 facility names). Handled at ingestion: decoded as Windows-1252 and stored as UTF-8 (§6). |
-| K12 | The crawler infers types per file, so an identifier code could be read as a number and lose its leading zeros | Silver restores fixed-width codes with `lpad`. After the first full crawl, the type of every code column is checked. |
+| K12 | Inferred column types could misread identifier codes | **Happened and resolved (v0.17).** The crawler typed CCNs as numbers, but 235 PBJ facilities have codes like `39A433`, and queries failed. Bronze now stores every column as text, so codes arrive exactly as delivered. Silver checks their format and quarantines rows that don't match. |
 | K13 | Snapshot dates differ: staffing is Q2 2024, facility attributes are October 2024 | Stated wherever attributes are used. Facilities missing from the snapshot keep their staffing rows (left join). |
 
 ## 15. Approval

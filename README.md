@@ -14,7 +14,7 @@ An AWS lakehouse that turns CMS nursing-home staffing data (Payroll-Based Journa
 - **Orchestration:** Step Functions, started manually.
 - **Infrastructure:** everything in Terraform, deployed to `us-west-2`.
 
-Full reasoning, trade-offs and rejected alternatives: [solution design](docs/solution-design.md) · [summary](docs/solution-design-summary.md)
+Full reasoning, trade-offs and rejected alternatives: [solution design](docs/solution-design.md) · [summary](docs/solution-design-summary.md) · [data profile](docs/data-profile.md)
 
 ## Tech stack
 
@@ -24,10 +24,10 @@ AWS (S3, Glue, Athena, Step Functions, DynamoDB, Secrets Manager, CloudWatch, SN
 
 | Path | Contents |
 |---|---|
-| `docs/` | Solution design, summary and architecture diagram |
+| `docs/` | Solution design, summary, architecture diagram and data profile |
 | `terraform/` | Infrastructure as code  |
 | `glue/drive_sync/` | Ingestion job: copies new or changed CSVs from Google Drive to S3 (Python 3.9, Glue Python shell) |
-| `sql/` | Silver and gold transformations and data checks *(planned)* |
+| `sql/` | Bronze profiling queries; silver and gold transformations and data checks *(planned)* |
 | `scripts/` | Local data checks: file inventory and encoding check |
 | `dashboard/` | Streamlit app *(planned)* |
 | `data/` | Local source files (not committed; see `data/README.md`) |
@@ -111,7 +111,7 @@ rm path/to/key.json
 
 ### 5. Run the ingestion job locally
 
-The job copies every new or changed CSV in the Drive folder to `raw/` in the lake bucket and records it in the DynamoDB manifest. Run it from the job's environment (see [Development setup](#development-setup)). The folder ID is the last part of the folder's Drive URL.
+The job copies every new or changed CSV in the Drive folder to `raw/` in the lake bucket, registers it as a table in the `raw` Glue database, and records it in the DynamoDB manifest. Run it from the job's environment (see [Development setup](#development-setup)). The folder ID is the last part of the folder's Drive URL.
 
 ```bash
 cd glue/drive_sync
@@ -119,7 +119,8 @@ python drive_sync.py \
   --folder_id <drive-folder-id> \
   --bucket "$(terraform -chdir=../../terraform/envs/dev output -raw lake_bucket_name)" \
   --manifest_table "$(terraform -chdir=../../terraform/envs/dev output -raw dynamodb_manifest_table_name)" \
-  --secret_name "$(terraform -chdir=../../terraform/envs/dev output -raw google_secret_name)"
+  --secret_name "$(terraform -chdir=../../terraform/envs/dev output -raw google_secret_name)" \
+  --raw_database hsl_dev_raw
 ```
 
 Running it a second time copies nothing: only new or changed files are copied.
@@ -142,9 +143,8 @@ Errors and tracebacks are in the `/aws-glue/python-jobs/error` log group.
 - [x] Repository foundation: gitignore, pre-commit, secret scanning
 - [x] Terraform foundation: remote state, provider, tagging
 - [x] Lake storage, Glue Data Catalog, Athena workgroups
-- [x] Bronze tables (Glue Crawler)
-- [x] Ingestion job (Google Drive → S3)
-- [ ] Data profiling on bronze
+- [x] Ingestion job (Google Drive → S3), registering bronze tables with every column as text
+- [x] Data profiling on bronze ([findings](docs/data-profile.md))
 - [ ] Silver layer
 - [ ] Gold layer and data checks
 - [ ] Orchestration with Step Functions
