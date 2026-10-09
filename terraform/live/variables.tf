@@ -1,3 +1,13 @@
+variable "env" {
+  description = "Environment to deploy: dev or prod. Passed in by the Makefile (make plan ENV=prod)"
+  type        = string
+
+  validation {
+    condition     = contains(["dev", "prod"], var.env)
+    error_message = "env must be dev or prod."
+  }
+}
+
 variable "region" {
   description = "AWS region for all resources"
   type        = string

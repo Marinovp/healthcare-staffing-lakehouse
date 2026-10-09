@@ -1,0 +1,8 @@
+# Copy to prod.backend.hcl (nothing secret in here, so commit it).
+# While dev and prod share one AWS account: the same bucket as dev, with its own key.
+# Once prod has its own account: that account's state bucket (make bootstrap ENV=prod).
+bucket       = "healthcare-staffing-tfstate-25faa1f2"
+key          = "envs/prod/terraform.tfstate"
+region       = "us-west-2"
+encrypt      = true
+use_lockfile = true

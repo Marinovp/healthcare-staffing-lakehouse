@@ -57,7 +57,8 @@ AWS (S3, Glue, Athena, Step Functions, DynamoDB, Secrets Manager, CloudWatch, SN
 | Path | Contents |
 |---|---|
 | `docs/` | Solution design, data profile, data dictionary, findings, diagram and screenshots |
-| `terraform/` | Infrastructure as code  |
+| `terraform/` | Infrastructure as code: one configuration for every environment (`live/`), shared modules, and the state-bucket bootstrap |
+| `Makefile` | Deploy and run any environment: `make <target> ENV=dev\|prod` |
 | `glue/drive_sync/` | Ingestion job: copies new or changed CSVs from Google Drive to S3 (Python 3.9, Glue Python shell) |
 | `sql/` | Bronze profiling, silver validation views, gold star schema and metrics, data checks, publish views |
 | `scripts/` | Local data checks: file inventory and encoding check |
@@ -109,45 +110,61 @@ uv pip install -r requirements-dev.txt
 
 ## Deployment
 
-All infrastructure is defined in Terraform and deployed to `us-west-2`, in two stacks applied in order: `bootstrap` (the state bucket) and `envs/dev` (the project).
+All infrastructure is Terraform, deployed to `us-west-2`. **One configuration, `terraform/live`, serves every environment.** You choose the environment with `ENV`, and a Makefile runs the right Terraform commands (`make help` lists them all):
+
+```bash
+make plan ENV=dev      # what would change in dev
+make apply ENV=dev     # apply exactly that plan
+make plan ENV=prod     # the same code with prod's settings (ENV=PROD works too)
+```
+
+Each environment has its own Terraform state and its own settings, in `terraform/live/config/`:
+
+| File | What it holds |
+|---|---|
+| `<env>.backend.hcl` | Where that environment's state is stored (committed) |
+| `<env>.tfvars` | Its AWS account ID, alert email and Drive folder (git-ignored; copy it from the `.example` file) |
+
+Resources are named by environment (`hsl-dev-*`, `hsl-prod-*`), so dev and prod can share one AWS account or live in separate ones.
 
 ### Prerequisites
 
-- Terraform 1.10 or newer (needed for S3 native state locking)
+- Terraform 1.10 or newer (needed for S3 native state locking) and GNU Make (already installed on macOS and Linux)
 - AWS CLI v2, signed in to the target account: `aws sts get-caller-identity` should show it
 - Permission in that account to create S3 buckets and the project's resources
+- With separate accounts per environment: a CLI profile for each, passed as `PROFILE=`, for example `make plan ENV=prod PROFILE=hsl-prod`
 
 ### 1. Fill in your settings
 
-Each stack refuses to run against any other account (`allowed_account_ids`). Copy the example files and set `account_id` to the number printed by the last command, `alert_email` to the address that should receive budget and failure alerts, and (in `envs/dev`) `drive_folder_id` to the ID of the Google Drive folder with the source files (the last part of its URL). The real `terraform.tfvars` files are git-ignored.
+Copy the example files. Set `account_id` to the number printed by the last command, `alert_email` to the address that should receive budget and failure alerts, and `drive_folder_id` to the ID of the Google Drive folder with the source files (the last part of its URL). Terraform refuses to run if your credentials belong to a different account than `account_id` (`allowed_account_ids`).
 
 ```bash
-cp terraform/bootstrap/terraform.tfvars.example terraform/bootstrap/terraform.tfvars
-cp terraform/envs/dev/terraform.tfvars.example terraform/envs/dev/terraform.tfvars
+cp terraform/bootstrap/config/dev.tfvars.example terraform/bootstrap/config/dev.tfvars
+cp terraform/live/config/dev.tfvars.example terraform/live/config/dev.tfvars
 aws sts get-caller-identity --query Account --output text
 ```
 
-### 2. Bootstrap the state bucket (once)
+### 2. Bootstrap the state bucket (once per AWS account)
 
-Creates a versioned, encrypted, TLS-only S3 bucket for Terraform state, protected against deletion. This small stack keeps its own state file locally (git-ignored).
-
-```bash
-terraform -chdir=terraform/bootstrap init
-terraform -chdir=terraform/bootstrap apply
-terraform -chdir=terraform/bootstrap output state_bucket_name
-```
-
-### 3. Deploy the dev environment
-
-Set `bucket` in the `backend "s3"` block of `terraform/envs/dev/versions.tf` to the bucket name from step 2. It has to be typed in literally, because Terraform reads the backend during `init`, before any variables exist.
+Creates a versioned, encrypted, TLS-only S3 bucket for Terraform state, protected against deletion. This small stack keeps its own state locally, in `terraform/bootstrap/state/` (git-ignored).
 
 ```bash
-terraform -chdir=terraform/envs/dev init
-terraform -chdir=terraform/envs/dev plan
-terraform -chdir=terraform/envs/dev apply
+make bootstrap ENV=dev
 ```
 
-The dev state is stored in the bucket at `envs/dev/terraform.tfstate` and locked during every run, so two applies can't overlap.
+Put the bucket name it prints into `terraform/live/config/dev.backend.hcl`.
+
+### 3. Deploy dev
+
+Dev deploys from the `dev` branch and prod from `main` (create the `dev` branch once with `git checkout -b dev`).
+
+```bash
+git checkout dev
+make plan ENV=dev
+make apply ENV=dev
+```
+
+`make apply` applies only the plan you just reviewed. It refuses to run from the wrong branch or with uncommitted changes, so what's deployed is always what's in Git. The state is locked during every run, so two applies can't overlap.
 
 ### 4. Give the pipeline read access to Google Drive
 
@@ -157,22 +174,22 @@ The dev state is stored in the bucket at `envs/dev/terraform.tfstate` and locked
 
 ```bash
 aws secretsmanager put-secret-value --region us-west-2 \
-  --secret-id "$(terraform -chdir=terraform/envs/dev output -raw google_secret_name)" \
+  --secret-id "$(make -s out ENV=dev NAME=google_secret_name)" \
   --secret-string file://path/to/key.json
 rm path/to/key.json
 ```
 
 ### 5. Run the ingestion job locally
 
-The job copies every new or changed CSV in the Drive folder to `raw/` in the lake bucket, registers it as a table in the `raw` Glue database, and records it in the DynamoDB manifest. Run it from the job's environment (see [Ingestion job environment](#ingestion-job-environment)). The folder ID is the last part of the folder's Drive URL.
+The job copies every new or changed CSV in the Drive folder to `raw/` in the lake bucket, registers it as a table in the `raw` Glue database, and records it in the DynamoDB manifest. Run it from the job's environment (see [Ingestion job environment](#ingestion-job-environment)).
 
 ```bash
 cd glue/drive_sync
 python drive_sync.py \
   --folder_id <drive-folder-id> \
-  --bucket "$(terraform -chdir=../../terraform/envs/dev output -raw lake_bucket_name)" \
-  --manifest_table "$(terraform -chdir=../../terraform/envs/dev output -raw dynamodb_manifest_table_name)" \
-  --secret_name "$(terraform -chdir=../../terraform/envs/dev output -raw google_secret_name)" \
+  --bucket "$(make -s -C ../.. out ENV=dev NAME=lake_bucket_name)" \
+  --manifest_table "$(make -s -C ../.. out ENV=dev NAME=dynamodb_manifest_table_name)" \
+  --secret_name "$(make -s -C ../.. out ENV=dev NAME=google_secret_name)" \
   --raw_database hsl_dev_raw
 ```
 
@@ -180,10 +197,10 @@ Running it a second time copies nothing: only new or changed files are copied.
 
 ### 6. Run the ingestion job in AWS Glue
 
-`terraform apply` (step 3) deploys the same script as the Glue Python shell job `hsl-dev-drive-sync`, with its settings (including `drive_folder_id` from step 1) passed as job arguments.
+`make apply` deploys the same script as the Glue Python shell job `hsl-dev-drive-sync`, with its settings passed as job arguments.
 
 ```bash
-aws glue start-job-run --job-name hsl-dev-drive-sync --region us-west-2
+make job ENV=dev
 aws glue get-job-runs --job-name hsl-dev-drive-sync --max-items 1 \
   --query 'JobRuns[0].[JobRunState,ExecutionTime,ErrorMessage]' --region us-west-2
 aws logs tail /aws-glue/python-jobs/output --since 15m --region us-west-2
@@ -196,23 +213,64 @@ Errors and tracebacks are in the `/aws-glue/python-jobs/error` log group.
 A Step Functions state machine runs everything in order: copy from Drive, build silver and gold, run the data checks, and publish only if every error-level check passes. Confirm the SNS subscription email first, so failure alerts reach you.
 
 ```bash
-aws stepfunctions start-execution --region us-west-2 \
-  --state-machine-arn "$(terraform -chdir=terraform/envs/dev output -raw pipeline_state_machine_arn)"
+make run ENV=dev
 ```
 
 Follow the run in the Step Functions console. Check results are in `hsl_dev_audit.check_results`, and the dashboard reads the `hsl_dev_marts` views. A second run with no new files ends at `NothingToBuild`.
 
 ### 8. Open the dashboard
 
-The Streamlit app reads the published `hsl_dev_marts` views through Athena's `dashboard` workgroup, using your AWS credentials, and caches the results for 24 hours.
+The Streamlit app reads the published marts of the chosen environment through its Athena `dashboard` workgroup, using your AWS credentials, and caches the results for 24 hours.
 
 ```bash
 source .venv/bin/activate
 python -m pip install -r dashboard/requirements.txt
-streamlit run dashboard/app.py
+make dashboard ENV=dev
 ```
 
 It covers staffing (nurse hours per resident day, RN hours, contract-staff share), the share of days below the CMS benchmark, trends by day and month, comparisons by state and ownership, staffing against occupancy and rehospitalisation, and facility rankings.
+
+### Releasing to prod
+
+Features are merged into `dev` and tested in the dev environment. When everyone's work for a release is in and tested, a reviewed pull request from `dev` into `main` is the release, and the same code goes to prod:
+
+```bash
+# test in dev
+git checkout dev && git pull
+make plan ENV=dev && make apply ENV=dev
+make run ENV=dev               # data checks pass, dashboard looks right
+
+# after the dev -> main pull request is merged
+git checkout main && git pull
+make plan ENV=prod             # should show the same changes dev got
+make apply ENV=prod
+make run ENV=prod
+```
+
+- **Code is promoted, data isn't.** Prod's pipeline builds its own data from the source, in its own bucket.
+- **Hotfixes:** branch from `main`, merge into `main` and deploy prod, then merge `main` back into `dev` so the two don't drift apart.
+- **Rollback:** apply the previous commit of `main`. The dashboard keeps showing the last good build until a run's checks pass.
+
+### Adding prod
+
+**In the same AWS account as dev:**
+
+1. Copy `terraform/live/config/prod.backend.hcl.example` to `prod.backend.hcl` (same state bucket as dev, its own key), and `prod.tfvars.example` to `prod.tfvars` (the same account ID).
+2. On `main`, run `make plan ENV=prod`, then `make apply ENV=prod`.
+3. Copy the Google key from the dev secret, without saving it to disk:
+   ```bash
+   aws secretsmanager put-secret-value --region us-west-2 \
+     --secret-id hsl-prod/google-drive-service-account \
+     --secret-string "$(aws secretsmanager get-secret-value --region us-west-2 \
+       --secret-id hsl-dev/google-drive-service-account --query SecretString --output text)"
+   ```
+4. Confirm the alert email, then `make run ENV=prod`. Both environments' budgets watch the whole account, so expect each alert twice.
+
+**In its own AWS account (the usual setup for production):**
+
+1. Create the account (AWS Organizations) and a CLI profile for it, for example `hsl-prod`.
+2. Add `terraform/bootstrap/config/prod.tfvars` with the new account ID, and run `make bootstrap ENV=prod PROFILE=hsl-prod`.
+3. Put that bucket in `prod.backend.hcl` and the new account ID in `prod.tfvars`. Then run steps 2–4 above with `PROFILE=hsl-prod`, using a prod service account for the Google key.
 
 ### Tearing down
 
@@ -221,7 +279,13 @@ The data stores are protected on purpose, so `terraform destroy` stops on them u
 - **Lake bucket and state bucket:** `prevent_destroy` in Terraform. Remove that `lifecycle` block first. Both buckets are versioned, so they must also be emptied, old versions included, before they can be deleted.
 - **Manifest table:** DynamoDB deletion protection. Set `deletion_protection_enabled = false` and apply before destroying.
 
-Destroy `envs/dev` first and `bootstrap` last, because the dev state is stored in the bootstrap bucket. The tables created by the job and the pipeline are deleted along with their Glue databases.
+There's deliberately no `make destroy`. Destroy each environment first, then the bootstrap stack of its account, because the environments' state is stored in the bootstrap bucket:
+
+```bash
+TF_DATA_DIR=.terraform/dev terraform -chdir=terraform/live destroy -var env=dev -var-file=config/dev.tfvars
+```
+
+The tables created by the job and the pipeline are deleted along with their Glue databases.
 
 ## Roadmap
 

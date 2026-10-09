@@ -1,4 +1,4 @@
-# Copy to terraform.tfvars and set your own values.
+# Copy to dev.tfvars (git-ignored) and set your own values.
 account_id      = "123456789012"
 alert_email     = "your@email.com"
 drive_folder_id = "your-google-drive-folder-id"

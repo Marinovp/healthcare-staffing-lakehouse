@@ -8,13 +8,9 @@ terraform {
     }
   }
 
-  backend "s3" {
-    bucket       = "healthcare-staffing-tfstate-25faa1f2"
-    key          = "envs/dev/terraform.tfstate"
-    region       = "us-west-2"
-    encrypt      = true
-    use_lockfile = true
-  }
+  # Each environment has its own state. The settings come from config/<env>.backend.hcl,
+  # which make init passes in.
+  backend "s3" {}
 }
 
 provider "aws" {
@@ -26,7 +22,7 @@ provider "aws" {
       Project     = "healthcare-staffing-lakehouse"
       ManagedBy   = "terraform"
       Stack       = "lakehouse"
-      Environment = local.env
+      Environment = var.env
     }
   }
 }

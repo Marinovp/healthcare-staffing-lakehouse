@@ -12,6 +12,9 @@ terraform {
       version = "~> 3.0"
     }
   }
+
+  # Local state, one file per account: state/<env>.tfstate (git-ignored), set by make bootstrap.
+  backend "local" {}
 }
 
 

@@ -1,0 +1,2 @@
+# Copy to dev.tfvars (git-ignored) and set the AWS account ID of the dev environment.
+account_id = "123456789012"

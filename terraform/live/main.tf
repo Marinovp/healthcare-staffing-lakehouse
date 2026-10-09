@@ -1,15 +1,13 @@
 locals {
-  env = "dev"
-
   # Most aws resource names allow hyphens: hsl-dev
-  name_prefix = "hsl-${local.env}"
+  name_prefix = "hsl-${var.env}"
 
   # Glue databases and Athena names should use underscores: hsl_dev_...
-  catalog_prefix = "hsl_${local.env}"
+  catalog_prefix = "hsl_${var.env}"
 }
 
 module "lakehouse" {
-  source = "../../modules/lakehouse"
+  source = "../modules/lakehouse"
 
   name_prefix    = local.name_prefix
   catalog_prefix = local.catalog_prefix
@@ -17,7 +15,7 @@ module "lakehouse" {
 }
 
 module "ingestion" {
-  source = "../../modules/ingestion"
+  source = "../modules/ingestion"
 
   name_prefix       = local.name_prefix
   lake_bucket_name  = module.lakehouse.lake_bucket_name
@@ -26,7 +24,7 @@ module "ingestion" {
 }
 
 module "pipeline" {
-  source = "../../modules/pipeline"
+  source = "../modules/pipeline"
 
   name_prefix           = local.name_prefix
   catalog_prefix        = local.catalog_prefix
