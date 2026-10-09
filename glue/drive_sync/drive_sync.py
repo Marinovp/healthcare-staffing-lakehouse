@@ -1,6 +1,7 @@
-"""drive_sync: copy new or changed CSV files from a Google Drive folder into S3 (bronze)."""
+"""drive_sync: copy new or changed CSV files from a Google Drive folder into S3 and register them as bronze tables."""
 
 import argparse
+import csv
 import hashlib
 import json
 import logging
@@ -50,20 +51,55 @@ def files_to_copy(files: list[dict], manifest: dict[str, dict]) -> list[dict]:
     ]
 
 
-def s3_key(file_name: str, ingest_date: str) -> str:
-    """Return the bronze key raw/<dataset>/ingest_date=YYYY-MM-DD/<file name>.
+def snake_case(name: str) -> str:
+    """NH_ProviderInfo_Oct2024 -> nh_provider_info_oct2024, "ZIP Code" -> zip_code."""
+    name = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name)
+    return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
 
-    The dataset is the file name in snake_case: NH_ProviderInfo_Oct2024.csv -> nh_provider_info_oct2024.
+
+def register_table(glue, database: str, bucket: str, dataset: str, ingest_date: str, header: str) -> None:
+    """Create or update the bronze table for a dataset, every column as text, and add its partition.
+
+    Text columns keep codes such as 015009 and 39A433 exactly as delivered; silver casts the types.
     """
-    stem = file_name.rsplit(".", 1)[0]
-    stem = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", stem)
-    dataset = re.sub(r"[^a-z0-9]+", "_", stem.lower()).strip("_")
-    return f"raw/{dataset}/ingest_date={ingest_date}/{file_name}"
+    location = f"s3://{bucket}/raw/{dataset}/"
+    storage = {
+        "Columns": [{"Name": snake_case(column), "Type": "string"} for column in next(csv.reader([header]))],
+        "Location": location,
+        "InputFormat": "org.apache.hadoop.mapred.TextInputFormat",
+        "OutputFormat": "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat",
+        "SerdeInfo": {
+            "SerializationLibrary": "org.apache.hadoop.hive.serde2.OpenCSVSerde",
+            "Parameters": {"separatorChar": ",", "quoteChar": '"'},
+        },
+    }
+    table_input = {
+        "Name": dataset,
+        "TableType": "EXTERNAL_TABLE",
+        "PartitionKeys": [{"Name": "ingest_date", "Type": "string"}],
+        "Parameters": {"classification": "csv", "skip.header.line.count": "1"},
+        "StorageDescriptor": storage,
+    }
+    try:
+        glue.create_table(DatabaseName=database, TableInput=table_input)
+    except glue.exceptions.AlreadyExistsException:
+        glue.update_table(DatabaseName=database, TableInput=table_input)
+
+    partition = {
+        "Values": [ingest_date],
+        "StorageDescriptor": {**storage, "Location": f"{location}ingest_date={ingest_date}/"},
+    }
+    try:
+        glue.create_partition(DatabaseName=database, TableName=dataset, PartitionInput=partition)
+    except glue.exceptions.AlreadyExistsException:
+        pass
 
 
-def copy_file(drive, s3, table, file: dict, bucket: str, ingest_date: str) -> None:
-    """Copy one Drive file to S3 as UTF-8, verify its MD5, then mark it LANDED."""
-    key = s3_key(file["name"], ingest_date)
+def copy_file(drive, s3, glue, table, file: dict, args: argparse.Namespace, ingest_date: str) -> None:
+    """Copy one Drive file to S3 as UTF-8, register its bronze table, then mark it LANDED."""
+    dataset = snake_case(file["name"].rsplit(".", 1)[0])
+    key = f"raw/{dataset}/ingest_date={ingest_date}/{file['name']}"
+    header = None
     with tempfile.TemporaryFile() as original, tempfile.TemporaryFile() as utf8:
         request = drive.files().get_media(fileId=file["id"])
         downloader = MediaIoBaseDownload(original, request, chunksize=CHUNK_SIZE)
@@ -79,6 +115,8 @@ def copy_file(drive, s3, table, file: dict, bucket: str, ingest_date: str) -> No
                 text = line.decode("utf-8")
             except UnicodeDecodeError:
                 text = line.decode("cp1252")
+            if header is None:
+                header = text
             utf8.write(text.encode("utf-8"))
 
         md5 = digest.hexdigest()
@@ -88,8 +126,9 @@ def copy_file(drive, s3, table, file: dict, bucket: str, ingest_date: str) -> No
             )
 
         utf8.seek(0)
-        s3.upload_fileobj(utf8, bucket, key)
+        s3.upload_fileobj(utf8, args.bucket, key)
 
+    register_table(glue, args.raw_database, args.bucket, dataset, ingest_date, header)
     table.put_item(
         Item={
             "drive_file_id": file["id"],
@@ -108,6 +147,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bucket", required=True)
     parser.add_argument("--manifest_table", required=True)
     parser.add_argument("--secret_name", required=True)
+    parser.add_argument("--raw_database", required=True)
     parser.add_argument("--region", default="us-west-2")
     args, _ = parser.parse_known_args()
     return args
@@ -128,6 +168,7 @@ def main() -> None:
     )
     drive = build("drive", "v3", credentials=credentials, cache_discovery=False)
     s3 = boto3.client("s3", region_name=args.region)
+    glue = boto3.client("glue", region_name=args.region)
     table = boto3.resource("dynamodb", region_name=args.region).Table(
         args.manifest_table
     )
@@ -141,7 +182,7 @@ def main() -> None:
     failed = []
     for file in to_copy:
         try:
-            copy_file(drive, s3, table, file, args.bucket, ingest_date)
+            copy_file(drive, s3, glue, table, file, args, ingest_date)
             log.info("Copied %s", file["name"])
         except Exception:
             log.exception("Failed to copy %s", file["name"])

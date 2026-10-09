@@ -8,6 +8,11 @@ variable "lake_bucket_name" {
   type        = string
 }
 
+variable "raw_database_name" {
+  description = "Glue database the job registers bronze tables in"
+  type        = string
+}
+
 variable "drive_folder_id" {
   description = "ID of the Google Drive folder to copy CSV files from"
   type        = string

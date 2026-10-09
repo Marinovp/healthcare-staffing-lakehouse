@@ -98,6 +98,7 @@ resource "aws_glue_job" "drive_sync" {
     "--bucket"                    = var.lake_bucket_name
     "--manifest_table"            = aws_dynamodb_table.manifest.name
     "--secret_name"               = aws_secretsmanager_secret.google_service_account.name
+    "--raw_database"              = var.raw_database_name
     "--region"                    = data.aws_region.current.region
   }
 }
