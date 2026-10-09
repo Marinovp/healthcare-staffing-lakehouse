@@ -11,7 +11,6 @@ locals {
 module "lakehouse" {
   source = "../../modules/lakehouse"
 
-  env            = local.env
   name_prefix    = local.name_prefix
   catalog_prefix = local.catalog_prefix
   alert_email    = var.alert_email

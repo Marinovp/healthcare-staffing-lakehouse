@@ -1,13 +1,3 @@
-variable "env" {
-  description = "The environment for the lakehouse deployment (e.g., dev, prod)."
-  type        = string
-
-  validation {
-    condition     = contains(["dev", "prod"], var.env)
-    error_message = "The 'env' variable must be one of the following: 'dev' or 'prod'."
-  }
-}
-
 variable "name_prefix" {
   description = "The prefix for naming resources in the lakehouse deployment."
   type        = string
@@ -31,17 +21,5 @@ variable "alert_email" {
   validation {
     condition     = can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.alert_email))
     error_message = "alert_email must be a valid email address."
-  }
-}
-
-
-variable "monthly_budget_usd" {
-  description = "The monthly budget in USD for the lakehouse deployment."
-  type        = number
-  default     = 10
-
-  validation {
-    condition     = var.monthly_budget_usd > 0
-    error_message = "monthly_budget_usd must be a positive number."
   }
 }

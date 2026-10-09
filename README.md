@@ -34,6 +34,8 @@ AWS (S3, Glue, Athena, Step Functions, DynamoDB, Secrets Manager, CloudWatch, SN
 
 ## Development setup
 
+The root environment needs **Python 3.11 or newer** (the scripts and the dashboard use newer standard-library features).
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate

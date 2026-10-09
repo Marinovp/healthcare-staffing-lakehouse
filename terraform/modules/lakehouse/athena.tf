@@ -16,9 +16,8 @@ locals {
 resource "aws_athena_workgroup" "this" {
   for_each = local.athena_workgroups
 
-  name        = "${var.name_prefix}-${each.key}"
-  description = each.value.description
-  #   force_destroy = var.env == "dev"
+  name          = "${var.name_prefix}-${each.key}"
+  description   = each.value.description
   force_destroy = true
 
   configuration {

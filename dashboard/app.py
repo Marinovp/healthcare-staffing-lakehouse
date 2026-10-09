@@ -257,8 +257,6 @@ with tab_facilities:
     st.caption("Ranked by resident days in the quarter.")
     st.dataframe(for_display(facilities.nlargest(10, "resident_days")), hide_index=True, column_config=columns)
 
-    st.subheader("Find a facility")
-    query = st.text_input("Name contains", placeholder="for example: veterans")
-    if query:
-        found = facilities[facilities["provider_name"].str.contains(query, case=False, na=False)]
-        st.dataframe(for_display(found.head(200)), hide_index=True, column_config=columns)
+    st.subheader("All facilities")
+    st.caption("Use the table's search and column sorting to find a facility.")
+    st.dataframe(for_display(facilities), hide_index=True, column_config=columns)

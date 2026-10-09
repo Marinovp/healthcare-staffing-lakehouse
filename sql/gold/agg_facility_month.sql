@@ -41,10 +41,6 @@ SELECT
         / nullif(sum(IF(d.is_weekend, f.mds_census, 0)), 0)                    AS weekend_total_hprd,
     sum(IF(NOT d.is_weekend AND f.hprd_eligible, f.total_nurse_hours, 0))
         / nullif(sum(IF(NOT d.is_weekend, f.mds_census, 0)), 0)                AS weekday_total_hprd,
-    sum(IF(d.is_weekend AND f.hprd_eligible, f.total_nurse_hours, 0))
-        / nullif(sum(IF(d.is_weekend, f.mds_census, 0)), 0)
-      - sum(IF(NOT d.is_weekend AND f.hprd_eligible, f.total_nurse_hours, 0))
-        / nullif(sum(IF(NOT d.is_weekend, f.mds_census, 0)), 0)                AS weekend_gap_hprd,
 
     avg(f.mds_census) / nullif(max(fac.certified_beds), 0)                     AS occupancy
 FROM ${prefix}_builds.fact_daily_staffing_${run_id} AS f
