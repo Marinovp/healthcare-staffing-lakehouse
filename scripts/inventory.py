@@ -8,14 +8,14 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 
 def md5_of(path: Path) -> str:
-    """Calculate the MD5 hash of a file, reading it in chunks."""
+    """MD5 of a file, read in chunks."""
     with path.open("rb") as f:
         return hashlib.file_digest(f, "md5").hexdigest()
 
 
 def count_rows_and_columns(path: Path) -> tuple[int, int, bool]:
-    """Count rows and columns, and report whether the file is valid UTF-8."""
-    for encoding in ("utf-8", "latin-1"):  # latin-1 can decode any byte, so the loop always returns
+    """Count rows and columns, and tell me if the file is valid UTF-8."""
+    for encoding in ("utf-8", "latin-1"):  # latin-1 never fails, so one of the two always returns
         try:
             with path.open(newline="", encoding=encoding) as f:
                 reader = csv.reader(f)

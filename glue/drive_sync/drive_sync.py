@@ -1,4 +1,4 @@
-"""drive_sync: copy new or changed CSV files from a Google Drive folder into S3 and register them as bronze tables."""
+"""drive_sync: copies new or changed CSVs from Google Drive to S3 and registers them as bronze tables."""
 
 import argparse
 import csv
@@ -58,9 +58,10 @@ def snake_case(name: str) -> str:
 
 
 def register_table(glue, database: str, bucket: str, dataset: str, ingest_date: str, header: str) -> None:
-    """Create or update the bronze table for a dataset, every column as text, and add its partition.
+    """Create or update the bronze table for this dataset and add the new partition.
 
-    Text columns keep codes such as 015009 and 39A433 exactly as delivered; silver casts the types.
+    Every column is a string on purpose: codes like 015009 and 39A433 stay exactly
+    as they came in, and silver does the casting.
     """
     location = f"s3://{bucket}/raw/{dataset}/"
     storage = {
@@ -96,7 +97,7 @@ def register_table(glue, database: str, bucket: str, dataset: str, ingest_date: 
 
 
 def copy_file(drive, s3, glue, table, file: dict, args: argparse.Namespace, ingest_date: str) -> None:
-    """Copy one Drive file to S3 as UTF-8, register its bronze table, then mark it LANDED."""
+    """Copy one file to S3 as UTF-8, register its table, then mark it LANDED."""
     dataset = snake_case(file["name"].rsplit(".", 1)[0])
     key = f"raw/{dataset}/ingest_date={ingest_date}/{file['name']}"
     header = None

@@ -1,4 +1,4 @@
-"""Load the published marts from Athena and compute the dashboard's metrics."""
+"""Pulls the published marts from Athena and works out the numbers for the dashboard."""
 
 import io
 import os
@@ -11,11 +11,11 @@ REGION = os.environ.get("AWS_REGION", "us-west-2")
 WORKGROUP = os.environ.get("ATHENA_WORKGROUP", "hsl-dev-dashboard")
 MARTS = os.environ.get("MARTS_DATABASE", "hsl_dev_marts")
 
-TOTAL_BENCHMARK = 3.48  # 2024 CMS minimum staffing rule, used as a benchmark only
+TOTAL_BENCHMARK = 3.48  # 2024 CMS minimum staffing numbers, only used as a reference
 RN_BENCHMARK = 0.55
 
-# One row per facility for Q2 2024. The sums (not the ratios) are loaded, so any filter can be
-# re-aggregated correctly: HPRD = eligible hours / resident days.
+# One row per facility for the quarter. I load the sums instead of the ratios so the numbers
+# stay right after filtering (HPRD = eligible hours / resident days).
 FACILITIES_SQL = f"""
 SELECT
     a.provnum,
@@ -41,7 +41,7 @@ JOIN {MARTS}.dim_facility AS f ON f.provnum = a.provnum
 GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9
 """
 
-# Daily sums by state and ownership, for the trend and the weekend gap.
+# Daily sums by state and ownership, used for the trend chart and the weekend gap.
 DAILY_SQL = f"""
 SELECT
     d.work_date,
@@ -61,7 +61,7 @@ GROUP BY 1, 2, 3, 4
 
 
 def run_query(sql: str, dtype: dict | None = None, parse_dates: list | None = None) -> pd.DataFrame:
-    """Run a query in the dashboard workgroup and read its CSV result straight from S3."""
+    """Run a query in the dashboard workgroup and read the CSV result straight from S3."""
     athena = boto3.client("athena", region_name=REGION)
     query_id = athena.start_query_execution(QueryString=sql, WorkGroup=WORKGROUP)["QueryExecutionId"]
     while True:
@@ -79,7 +79,7 @@ def run_query(sql: str, dtype: dict | None = None, parse_dates: list | None = No
 
 
 def load_facilities() -> pd.DataFrame:
-    # provnum is read as text: codes like 015009 and 39A433 must stay exactly as they are.
+    # keep provnum as text, otherwise 015009 loses its leading zero and 39A433 breaks
     return run_query(FACILITIES_SQL, dtype={"provnum": str})
 
 
@@ -88,14 +88,14 @@ def load_daily() -> pd.DataFrame:
 
 
 def ratio(numerator: pd.Series | float, denominator: pd.Series | float):
-    """Divide, giving NaN instead of an error or infinity when the denominator is 0."""
+    """Safe divide: NaN instead of a crash or inf when the denominator is 0."""
     if isinstance(denominator, pd.Series):
         return numerator / denominator.where(denominator != 0)
     return numerator / denominator if denominator else float("nan")
 
 
 def add_facility_metrics(facilities: pd.DataFrame) -> pd.DataFrame:
-    """Per-facility ratios for tables and comparisons."""
+    """Ratios per facility, used in the tables."""
     f = facilities.copy()
     f["total_hprd"] = ratio(f["eligible_total_hours"], f["resident_days"])
     f["rn_hprd"] = ratio(f["eligible_rn_hours"], f["resident_days"])
@@ -107,7 +107,7 @@ def add_facility_metrics(facilities: pd.DataFrame) -> pd.DataFrame:
 
 
 def summarize(facilities: pd.DataFrame, daily: pd.DataFrame) -> dict:
-    """Headline metrics for the current selection, re-aggregated from the sums."""
+    """Headline numbers for whatever is selected, rebuilt from the sums."""
     weekend = daily[daily["is_weekend"]]
     weekday = daily[~daily["is_weekend"]]
     return {
@@ -125,7 +125,7 @@ def summarize(facilities: pd.DataFrame, daily: pd.DataFrame) -> dict:
 
 
 def group_metrics(facilities: pd.DataFrame, by: str) -> pd.DataFrame:
-    """HPRD, contract share and below-benchmark rate for each value of a column."""
+    """HPRD, contract share and % of days below benchmark for each value of a column."""
     sums = facilities.groupby(by, dropna=False).agg(
         facilities=("provnum", "count"),
         resident_days=("resident_days", "sum"),

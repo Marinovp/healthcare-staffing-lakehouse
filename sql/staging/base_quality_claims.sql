@@ -1,8 +1,8 @@
--- Validation view for NH_QualityMsr_Claims (one row per facility and measure): the newest file, typed,
--- with a reject_reason. A missing score is not an error: CMS leaves it empty when there are too few residents.
--- Placeholder: ${prefix} (for example hsl_dev).
+-- Validation view for NH_QualityMsr_Claims (one row per facility and measure): newest file only, typed,
+-- with a reject_reason. An empty score isn't an error, CMS leaves it blank when there are too few residents.
+-- Placeholder: ${prefix} (e.g. hsl_dev).
 CREATE OR REPLACE VIEW ${prefix}_staging.base_quality_claims AS
--- The newest file is the newest ingest_date partition. (Athena views can't read "$partitions" metadata.)
+-- newest file = latest ingest_date partition (this scans the table: Athena views can't use "$partitions")
 WITH newest AS (
     SELECT *, "$path" AS source_file
     FROM ${prefix}_raw.nh_quality_msr_claims_oct2024

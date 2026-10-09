@@ -1,7 +1,7 @@
--- Validation view for PBJ daily nurse staffing: the newest file, typed, with a reject_reason per row.
--- Rules come from docs/data-profile.md. Placeholder: ${prefix} (for example hsl_dev).
+-- Validation view for PBJ: newest file only, typed, with a reject_reason on every row.
+-- The rules come from docs/data-profile.md. Placeholder: ${prefix} (e.g. hsl_dev).
 CREATE OR REPLACE VIEW ${prefix}_staging.base_pbj_daily_staffing AS
--- The newest file is the newest ingest_date partition. (Athena views can't read "$partitions" metadata.)
+-- newest file = latest ingest_date partition (this scans the table: Athena views can't use "$partitions")
 WITH newest AS (
     SELECT *, "$path" AS source_file
     FROM ${prefix}_raw.pbj_daily_nurse_staffing_q2_2024
@@ -53,7 +53,7 @@ typed AS (
 checked AS (
     SELECT
         *,
-        -- least() is NULL if any value is NULL, so one expression checks all 24 hours columns.
+        -- least() returns NULL if any value is NULL, so this one line checks all 24 hours columns
         least(
             hrs_rndon, hrs_rndon_emp, hrs_rndon_ctr, hrs_rnadmin, hrs_rnadmin_emp, hrs_rnadmin_ctr,
             hrs_rn, hrs_rn_emp, hrs_rn_ctr, hrs_lpnadmin, hrs_lpnadmin_emp, hrs_lpnadmin_ctr,

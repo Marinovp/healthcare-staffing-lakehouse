@@ -1,4 +1,4 @@
--- Store this run's silver table for one dataset: every row of the newest file, with its reject_reason.
+-- Save this run's silver table for a dataset: every row of the newest file plus its reject_reason.
 -- Placeholders: ${prefix}, ${bucket}, ${dataset}, ${run_id}
 CREATE TABLE ${prefix}_builds.silver_${dataset}_${run_id}
 WITH (

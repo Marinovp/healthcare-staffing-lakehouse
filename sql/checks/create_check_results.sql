@@ -1,4 +1,4 @@
--- One row per check per run. Created once; every run appends to it. Placeholders: ${prefix}, ${bucket}
+-- Audit table: one row per check per run. Created once, then every run adds to it. Placeholders: ${prefix}, ${bucket}
 CREATE TABLE IF NOT EXISTS ${prefix}_audit.check_results (
     run_id      string,
     check_name  string,

@@ -1,4 +1,4 @@
--- dim_date: one row per day between the first and last day of valid staffing data.
+-- dim_date: one row per day, from the first to the last day of staffing data.
 -- Placeholders: ${prefix}, ${bucket}, ${run_id}
 CREATE TABLE ${prefix}_builds.dim_date_${run_id}
 WITH (
@@ -15,7 +15,7 @@ WITH bounds AS (
 ),
 
 days AS (
-    -- Athena's sequence() works on timestamps only, so each generated day is cast back to a date
+    -- Athena's sequence() only works with timestamps, so cast each day back to a date
     SELECT CAST(ts AS date) AS day
     FROM bounds
     CROSS JOIN UNNEST(sequence(CAST(first_day AS timestamp), CAST(last_day AS timestamp), INTERVAL '1' DAY)) AS t (ts)

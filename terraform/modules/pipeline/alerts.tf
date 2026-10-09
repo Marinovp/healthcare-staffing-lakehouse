@@ -1,4 +1,4 @@
-# Email when a run fails, times out or is stopped. The subscription must be confirmed from the first email.
+# Sends an email when a run fails, times out or gets stopped. Confirm the subscription from the first email or nothing arrives.
 
 resource "aws_sns_topic" "alerts" {
   name = "${var.name_prefix}-pipeline-alerts"

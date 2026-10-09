@@ -1,9 +1,9 @@
--- Bronze profiling: run each query separately in Athena
+-- Bronze profiling queries. Run them one at a time in Athena
 -- (workgroup hsl-dev-pipeline, database hsl_dev_raw).
--- Bronze columns are all text, so values are checked exactly as delivered.
--- Findings and decisions: docs/data-profile.md
+-- Everything in bronze is text, so this checks the values exactly as they came in.
+-- What I found and what I decided: docs/data-profile.md
 
--- 1. Code formats in PBJ
+-- 1. Do the codes in PBJ look right?
 SELECT
     count(DISTINCT provnum)                                                    AS facilities,
     count(DISTINCT CASE WHEN regexp_like(provnum, '[A-Z]') THEN provnum END)    AS ccn_with_letter,
@@ -13,7 +13,7 @@ SELECT
     count_if(cy_qtr <> '2024Q2')                                                AS other_quarter
 FROM pbj_daily_nurse_staffing_q2_2024;
 
--- 2. Partitions: one ingest_date per dataset expected
+-- 2. Partitions (should be only one ingest_date)
 SELECT ingest_date, count(*) AS row_count
 FROM pbj_daily_nurse_staffing_q2_2024
 GROUP BY ingest_date;
@@ -28,15 +28,15 @@ SELECT
     count_if(try_cast(mdscensus AS integer) = 0)          AS census_zero
 FROM pbj_daily_nurse_staffing_q2_2024;
 
--- 4. PBJ grain: one row per facility per day (expect no rows)
+-- 4. Grain check: one row per facility per day (should return nothing)
 SELECT provnum, work_date, count(*) AS copies
 FROM pbj_daily_nurse_staffing_q2_2024
 GROUP BY provnum, work_date
 HAVING count(*) > 1
 LIMIT 10;
 
--- 5. PBJ hours sanity (CMS groups: RN incl. DON and admin; LPN incl. admin;
---    aides = CNA, aides in training, medication aides)
+-- 5. Sanity checks on the hours (CMS groups: RN incl. DON + admin, LPN incl. admin,
+--    aides = CNA + trainees + med aides)
 WITH pbj AS (
     SELECT
         try_cast(mdscensus AS integer) AS census,
@@ -55,7 +55,7 @@ SELECT
     count_if(census > 0 AND (rn_hours + lpn_hours + aide_hours) / census > 24)     AS total_hprd_over_24
 FROM pbj;
 
--- 6. Metric preview: are the planned metrics computable and plausible?
+-- 6. Quick preview of the metrics: can I calculate them, and do they look right?
 WITH pbj AS (
     SELECT
         try_cast(mdscensus AS integer) AS census,
@@ -79,7 +79,7 @@ SELECT
 FROM pbj
 WHERE census > 0;
 
--- 7. Join key: how many PBJ facilities exist in ProviderInfo
+-- 7. How many PBJ facilities can I find in ProviderInfo?
 SELECT
     count(DISTINCT p.provnum)                        AS pbj_facilities,
     count(DISTINCT i.cms_certification_number_ccn)   AS matched_in_provider_info
@@ -96,7 +96,7 @@ WHERE i.cms_certification_number_ccn IS NULL
 GROUP BY 1, 2
 ORDER BY 1;
 
--- 9. ProviderInfo: one row per facility, and certified beds coverage (for occupancy)
+-- 9. ProviderInfo: one row per facility? And are the beds filled in (needed for occupancy)?
 SELECT
     count(*)                                                          AS row_count,
     count(DISTINCT cms_certification_number_ccn)                      AS facilities,
@@ -106,7 +106,7 @@ SELECT
     max(try_cast(number_of_certified_beds AS integer))                AS beds_max
 FROM nh_provider_info_oct2024;
 
--- 10. Claims: which measures exist, and how many facilities have a score
+-- 10. Claims: which measures are there, and how many facilities have a score?
 SELECT
     measure_code,
     measure_description,
@@ -116,7 +116,7 @@ FROM nh_quality_msr_claims_oct2024
 GROUP BY 1, 2
 ORDER BY 1;
 
--- 11. ProviderInfo: ownership type distribution
+-- 11. Facilities by ownership type
 SELECT ownership_type, count(*) AS facilities
 FROM nh_provider_info_oct2024
 GROUP BY 1

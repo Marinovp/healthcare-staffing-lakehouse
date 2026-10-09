@@ -1,6 +1,6 @@
--- dim_facility: one row per facility that reported staffing. Built from PBJ's facilities LEFT JOINed to
--- ProviderInfo and the Claims measures, so facilities missing from the October 2024 snapshot keep their
--- staffing rows, with "Unknown" attributes. Placeholders: ${prefix}, ${bucket}, ${run_id}
+-- dim_facility: one row per facility in PBJ. LEFT JOIN to ProviderInfo and Claims so the facilities
+-- that aren't in the October file still keep their staffing rows (they show up as "Unknown").
+-- Placeholders: ${prefix}, ${bucket}, ${run_id}
 CREATE TABLE ${prefix}_builds.dim_facility_${run_id}
 WITH (
     table_type  = 'ICEBERG',
@@ -10,7 +10,7 @@ WITH (
 )
 AS
 WITH pbj_facilities AS (
-    -- PBJ's own name and location, taken from each facility's latest day in the quarter
+    -- name and location come from PBJ, taken from the facility's last day in the quarter
     SELECT
         provnum,
         max_by(provider_name, work_date) AS provider_name,
@@ -30,7 +30,7 @@ provider_info AS (
 ),
 
 claims AS (
-    -- 521: % of short-stay residents rehospitalised; 551: hospitalisations per 1,000 long-stay resident days
+    -- 521 = % of short-stay residents rehospitalised, 551 = hospitalisations per 1,000 long-stay days
     SELECT
         provnum,
         max(IF(measure_code = '521', adjusted_score)) AS short_stay_rehospitalisation_pct,

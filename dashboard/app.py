@@ -1,4 +1,4 @@
-"""Nursing home staffing dashboard (CMS PBJ, Q2 2024). Run with: streamlit run dashboard/app.py"""
+"""Streamlit dashboard for the PBJ staffing data (Q2 2024). Run it with: streamlit run dashboard/app.py"""
 
 import altair as alt
 import pandas as pd
@@ -17,7 +17,7 @@ from data import (
 
 st.set_page_config(page_title="Nursing Home Staffing", layout="wide")
 
-# One series per chart, so one validated hue (reference palette slot 1), stepped for each theme.
+# Every chart has a single series, so one blue is enough (a slightly lighter one in dark mode).
 DARK = st.context.theme.type == "dark"
 SERIES = "#3987e5" if DARK else "#2a78d6"
 REFERENCE = "#c3c2b7" if DARK else "#52514e"
@@ -31,10 +31,10 @@ def get_data() -> tuple[pd.DataFrame, pd.DataFrame]:
 def bar_chart(df: pd.DataFrame, category: str, value: str, value_title: str, value_format: str,
               horizontal: bool = False, benchmark: float | None = None, tooltip: list | None = None,
               axis_format: str | None = None, order: list | None = None):
-    """A single-series bar chart with thin, separated bars and an optional dashed benchmark line.
+    """Single-series bar chart with an optional dashed benchmark line.
 
-    The benchmark is explained in the caption under the chart rather than labelled on the plot,
-    so the label never collides with the bars.
+    The benchmark is explained in the caption instead of labelled on the chart,
+    because the label kept running into the bars.
     """
     value_axis = alt.X if horizontal else alt.Y
     category_axis = alt.Y if horizontal else alt.X
@@ -64,7 +64,7 @@ st.caption(
     "minimum staffing rule, used as a reference only."
 )
 
-# ---------- Filters (one row, above everything) ----------
+# ---------- Filters ----------
 filter_state, filter_ownership = st.columns([3, 2])
 states = filter_state.multiselect("States", sorted(facilities_all["state"].dropna().unique()),
                                   placeholder="All states")
@@ -243,7 +243,7 @@ with tab_facilities:
     shown = list(columns)
 
     def for_display(df: pd.DataFrame) -> pd.DataFrame:
-        """Shares as whole percents (0.88 -> 88) so every percentage column reads the same way."""
+        """Show shares as whole percents (0.88 -> 88) so all the % columns look the same."""
         shares = ["occupancy", "below_total_rate", "contract_share"]
         return df[shown].assign(**{c: df[c] * 100 for c in shares})
 

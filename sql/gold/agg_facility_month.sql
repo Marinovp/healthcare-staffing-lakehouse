@@ -1,5 +1,5 @@
--- agg_facility_month: the dashboard's metrics per facility per month, pre-computed so queries stay small.
--- HPRD = hours / resident days, counting hours only on days with residents (census > 0).
+-- agg_facility_month: the dashboard metrics per facility per month, calculated up front so the
+-- dashboard queries stay small. HPRD = hours / resident days, only counting hours on days with residents.
 -- Placeholders: ${prefix}, ${bucket}, ${run_id}
 CREATE TABLE ${prefix}_builds.agg_facility_month_${run_id}
 WITH (

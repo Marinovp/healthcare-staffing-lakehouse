@@ -2,7 +2,21 @@
 
 An AWS lakehouse that turns CMS nursing-home staffing data (Payroll-Based Journal, Q2 2024, ~1.3M daily facility records) into staffing metrics and a dashboard: nurse hours per resident day, contract-staff share, and how often facilities fall below the CMS 2024 staffing benchmark.
 
-> 🚧 **In progress.** Built step by step. See the [roadmap](#roadmap).
+![Dashboard overview](docs/images/dashboard-overview.png)
+
+## Key findings
+
+- **Weekends are the biggest staffing gap.** Nursing hours per resident day (HPRD) fall from 3.91 on weekdays to 3.26 on weekends, and RN hours per resident drop 40%. Every weekend of the quarter is below the 3.48 benchmark.
+- **Ownership matters more than occupancy.** For-profit facilities staff 3.58 HPRD and spend 44% of days below the benchmark; non-profits staff 4.17 and spend 21%. Staffing per resident is nearly flat across occupancy levels (correlation −0.06).
+- **The RN benchmark is the harder one.** 47% of facilities average below 0.55 RN HPRD, against 37% below 3.48 total, so the two are reported separately.
+- **Staffing barely predicts rehospitalisation** (correlation −0.06 across 11,817 facilities): a modest signal at most, and correlation, not causation.
+- **Biggest state gaps:** Illinois and Missouri (3.25 HPRD) and Texas (3.30) are lowest; Alaska (6.01) and Oregon (5.01) are highest.
+
+The answers to the brief's four questions, including the two the data can't answer (overtime and length of stay) and the closest measure for each, are in **[Findings](docs/findings.md)**.
+
+| By state | By ownership | Patient load and outcomes |
+|---|---|---|
+| ![Staffing by state](docs/images/staffing-by-state.png) | ![Staffing by ownership](docs/images/staffing-by-ownership.png) | ![Staffing by occupancy and rehospitalisation](docs/images/load-and-outcomes.png) |
 
 ## Architecture
 
@@ -14,7 +28,25 @@ An AWS lakehouse that turns CMS nursing-home staffing data (Payroll-Based Journa
 - **Orchestration:** Step Functions, started manually.
 - **Infrastructure:** everything in Terraform, deployed to `us-west-2`.
 
-Full reasoning, trade-offs and rejected alternatives: [solution design](docs/solution-design.md) · [summary](docs/solution-design-summary.md) · [data profile](docs/data-profile.md)
+A full run (copy, build, check, publish) takes about 3 minutes and costs a few cents. A rerun with no new files ends after the copy step.
+
+## Documentation
+
+| Document | What's in it |
+|---|---|
+| [Solution design](docs/solution-design.md) · [summary](docs/solution-design-summary.md) | Architecture, why each service was chosen, rejected alternatives, data quality, failure handling, security, cost, risks |
+| [Data profile](docs/data-profile.md) | What profiling the source data found, and the validation rule each finding became |
+| [Data dictionary](docs/data-dictionary.md) | Every table and column, from bronze to gold, with metric definitions and reject reasons |
+| [Findings](docs/findings.md) | Answers to the brief's questions, with conclusions and limits |
+
+## What changed during the build
+
+The design was approved before any code was written. These four changes came from evidence found while building, and each one is recorded in the design doc:
+
+1. **The Glue crawler was removed.** It guessed column types from the start of each file and typed facility IDs as numbers, but 235 facilities have IDs like `39A433`, and every query on the main table failed. The ingestion job now registers each table itself, with every column as text, and silver converts the types.
+2. **The pipeline went from 23 minutes to under 3.** Step Functions' `.sync` integration for Athena checks for completion only about once a minute, so 23 quick queries took 23 minutes. A 3-second polling loop replaced it.
+3. **Files go through a temporary file instead of a pure stream.** A file's encoding is only known after reading all of it (PBJ is Windows-1252), so each file is downloaded to local disk, verified against Drive's MD5 and converted to UTF-8 in one pass.
+4. **Validation rules come from profiling.** 2,522 days with residents but no recorded nursing hours, and 75 days with impossible staffing, are quarantined with a reason rather than averaged into the metrics.
 
 ## Tech stack
 
@@ -24,7 +56,7 @@ AWS (S3, Glue, Athena, Step Functions, DynamoDB, Secrets Manager, CloudWatch, SN
 
 | Path | Contents |
 |---|---|
-| `docs/` | Solution design, summary, architecture diagram and data profile |
+| `docs/` | Solution design, data profile, data dictionary, findings, diagram and screenshots |
 | `terraform/` | Infrastructure as code  |
 | `glue/drive_sync/` | Ingestion job: copies new or changed CSVs from Google Drive to S3 (Python 3.9, Glue Python shell) |
 | `sql/` | Bronze profiling, silver validation views, gold star schema and metrics, data checks, publish views |
@@ -174,3 +206,4 @@ It covers staffing (nurse hours per resident day, RN hours, contract-staff share
 - [x] Gold layer and data checks: star schema, monthly metrics, checks gating publish
 - [x] Orchestration with Step Functions: write-audit-publish, failure alerts, full run in about 3 minutes
 - [x] Dashboard: Streamlit on the published marts
+- [x] Findings and data dictionary

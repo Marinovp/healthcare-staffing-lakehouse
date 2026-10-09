@@ -29,7 +29,7 @@ data "aws_iam_policy_document" "pipeline" {
     resources = ["arn:aws:athena:${local.region}:${local.account_id}:workgroup/${var.athena_workgroup_name}"]
   }
 
-  # Athena uses the caller's permissions on the catalog to read bronze and create views and tables.
+  # Athena runs with our permissions on the catalog, so the role needs these to read bronze and create views/tables.
   statement {
     sid = "UseProjectCatalog"
     actions = [
@@ -82,7 +82,7 @@ resource "aws_iam_role_policy" "pipeline" {
 # ---------- State machine ----------
 
 locals {
-  # r20261009_183005, from the execution start time: unique per run and valid in table names.
+  # e.g. r20261009_183005, built from the start time: unique per run and safe to use in table names.
   run_id_expression = "'r' & $replace($replace($replace($substring($states.context.Execution.StartTime, 0, 19), '-', ''), ':', ''), 'T', '_')"
 
   athena_retry = [{
@@ -92,10 +92,10 @@ locals {
     BackoffRate     = 2
   }]
 
-  # One Map iteration per SQL statement, one at a time and in order. Each iteration starts the query,
-  # then checks every 3 seconds until it finishes. (The .sync integration only checks about once a
-  # minute, which made every statement take a minute.) State names must be unique across the whole
-  # state machine, so each Map gets its own copy, named after its step.
+  # One Map iteration per SQL statement, one at a time, in order. Each one starts the query and
+  # checks it every 3 seconds until it's done. I first used .sync, but it only checks about once a
+  # minute, so every statement took a minute. State names have to be unique across the whole state
+  # machine, so each Map gets its own copy, named after its step.
   query_processors = {
     for step in ["Build", "Gate", "Publish"] : step => {
       ProcessorConfig = { Mode = "INLINE" }

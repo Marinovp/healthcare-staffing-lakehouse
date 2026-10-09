@@ -1,7 +1,7 @@
--- Validation view for NH_ProviderInfo (one row per facility): the newest file, typed, with a reject_reason.
--- Placeholder: ${prefix} (for example hsl_dev).
+-- Validation view for NH_ProviderInfo (one row per facility): newest file only, typed, with a reject_reason.
+-- Placeholder: ${prefix} (e.g. hsl_dev).
 CREATE OR REPLACE VIEW ${prefix}_staging.base_provider_info AS
--- The newest file is the newest ingest_date partition. (Athena views can't read "$partitions" metadata.)
+-- newest file = latest ingest_date partition (this scans the table: Athena views can't use "$partitions")
 WITH newest AS (
     SELECT *, "$path" AS source_file
     FROM ${prefix}_raw.nh_provider_info_oct2024

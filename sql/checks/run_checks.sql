@@ -1,5 +1,5 @@
--- Data checks for one run, appended to audit.check_results. Any 'error' with failures > 0 blocks publishing.
--- 'warning' checks are recorded for review but don't block. Placeholders: ${prefix}, ${run_id}
+-- Data checks for one run, saved to audit.check_results. If any 'error' check has failures,
+-- nothing gets published. 'warning' checks are only logged. Placeholders: ${prefix}, ${run_id}
 INSERT INTO ${prefix}_audit.check_results
 WITH
 fact AS (SELECT * FROM ${prefix}_builds.fact_daily_staffing_${run_id}),
@@ -20,7 +20,7 @@ facility_quarter AS (
 ),
 
 results (check_name, severity, failures) AS (
-    -- Keys: unique and not null in every mart
+    -- keys: unique and not null
     SELECT 'fact_key_unique', 'error', count(*)
     FROM (SELECT provnum, work_date FROM fact GROUP BY 1, 2 HAVING count(*) > 1)
     UNION ALL
@@ -35,7 +35,7 @@ results (check_name, severity, failures) AS (
     SELECT 'agg_key_unique', 'error', count(*)
     FROM (SELECT provnum, month_start FROM agg GROUP BY 1, 2 HAVING count(*) > 1)
 
-    -- Relationships: every fact row has its facility and its date
+    -- every fact row needs a facility and a date
     UNION ALL
     SELECT 'fact_facility_in_dim', 'error', count(*)
     FROM fact AS f LEFT JOIN dim_facility AS d ON d.provnum = f.provnum
@@ -45,7 +45,7 @@ results (check_name, severity, failures) AS (
     FROM fact AS f LEFT JOIN dim_date AS d ON d.work_date = f.work_date
     WHERE d.work_date IS NULL
 
-    -- Reconciliation: nothing lost between layers
+    -- row counts: make sure nothing got lost between layers
     UNION ALL
     SELECT 'silver_rows_match_bronze', 'error',
            abs((SELECT count(*) FROM silver_pbj)
@@ -55,7 +55,7 @@ results (check_name, severity, failures) AS (
            abs((SELECT count(*) FROM fact)
                - (SELECT count(*) FROM silver_pbj WHERE reject_reason IS NULL))
 
-    -- Plausibility: recorded for review, not blocking
+    -- sanity checks (warnings only)
     UNION ALL
     SELECT 'daily_hprd_in_0_to_24', 'warning', count_if(total_hprd < 0 OR total_hprd > 24) FROM fact
     UNION ALL

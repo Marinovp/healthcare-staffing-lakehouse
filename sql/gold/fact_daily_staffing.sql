@@ -1,7 +1,7 @@
--- fact_daily_staffing: one row per facility per day, from the valid silver rows.
--- Hour groups follow CMS: RN includes the director of nursing and RN admin; LPN includes LPN admin;
--- aides are CNAs, aides in training and medication aides. The 3.48 / 0.55 HPRD benchmarks are the
--- 2024 CMS minimum staffing rule, used as a benchmark only. Placeholders: ${prefix}, ${bucket}, ${run_id}
+-- fact_daily_staffing: one row per facility per day (valid silver rows only).
+-- Hour groups follow CMS: RN = RN + DON + RN admin, LPN = LPN + LPN admin, aides = CNA + trainees + med aides.
+-- 3.48 / 0.55 come from the 2024 CMS minimum staffing rule, only used here as a benchmark.
+-- Placeholders: ${prefix}, ${bucket}, ${run_id}
 CREATE TABLE ${prefix}_builds.fact_daily_staffing_${run_id}
 WITH (
     table_type  = 'ICEBERG',
@@ -44,6 +44,6 @@ with_hprd AS (
 
 SELECT
     *,
-    total_hprd < 3.48   AS below_total_benchmark,   -- NULL on days without residents
+    total_hprd < 3.48   AS below_total_benchmark,   -- NULL when there were no residents
     rn_hprd < 0.55      AS below_rn_benchmark
 FROM with_hprd
